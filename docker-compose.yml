@@ -1,0 +1,35 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - botnet
+
+  bot:
+    build: .
+    container_name: aiogram_bot
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - ./:/app
+    networks:
+      - botnet
+    restart: always
+
+volumes:
+  db_data:
+
+networks:
+  botnet:

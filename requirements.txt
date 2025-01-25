@@ -1,0 +1,4 @@
+aiogram==3.17.0
+sqlalchemy==2.0.37
+asyncpg==0.30.0
+uvloop==0.21.0
