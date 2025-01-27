@@ -8,6 +8,7 @@ from sqlalchemy import select, func
 from app.config import config
 from app.db.db import init_db, AsyncSessionLocal
 from app.db.models import Base, User
+from app.handlers.callback import callback_router
 from app.handlers.start import start_router
 from app.handlers.broadcast import broadcast_router
 from app.handlers.keyword import keyword_router
@@ -40,6 +41,7 @@ async def main():
     dp.include_router(broadcast_router)
     dp.include_router(keyword_router)
     dp.include_router(stats_router)
+    dp.include_router(callback_router)
 
     # Регистрируем запуск фоновой задачи в on_startup
     asyncio.create_task(mailing_scheduler(bot))

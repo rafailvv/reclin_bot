@@ -21,18 +21,17 @@ class User(Base):
     last_interaction = Column(DateTime, nullable=True)  # Дата последнего взаимодействия
     created_at = Column(DateTime, default=datetime.utcnow)
 
-
 class Material(Base):
     """
     Таблица материалов, привязанных к ключевому слову.
+    Храним chat_id + message_id, чтобы потом делать forward.
     """
     __tablename__ = "materials"
 
     id = Column(Integer, primary_key=True)
     keyword = Column(String, unique=True, nullable=False)
-    text_content = Column(Text, nullable=True)
-    # Дополнительно ссылки на файлы/картинки/видео
-
+    chat_id = Column(String, nullable=True)      # В каком чате лежит сообщение
+    message_id = Column(Integer, nullable=True)  # ID сообщения для forward
 
 class KeywordLink(Base):
     """
@@ -48,6 +47,19 @@ class KeywordLink(Base):
     click_count = Column(Integer, default=0)
 
     material = relationship("Material")
+
+
+class MaterialView(Base):
+    """
+    Таблица учёта: какой user смотрел какой keyword (Material).
+    """
+    __tablename__ = "material_views"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    viewed_at = Column(DateTime, default=datetime.utcnow)
+
 
 
 class Mailing(Base):

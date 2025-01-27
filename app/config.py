@@ -5,6 +5,7 @@ load_dotenv()  # Загрузим .env
 
 class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
+    BOT_LINK: str = os.getenv("BOT_LINK", "")
     DB_HOST: str = os.getenv("DATABASE_HOST", "localhost")
     DB_USER: str = os.getenv("DATABASE_USER", "postgres")
     DB_PASSWORD: str = os.getenv("DATABASE_PASSWORD", "postgres")
