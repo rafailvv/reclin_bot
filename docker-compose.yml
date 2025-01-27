@@ -3,7 +3,7 @@ version: '3.9'
 services:
   db:
     image: postgres:15
-    container_name: postgres_db
+    container_name: reclin_postgres
     environment:
       POSTGRES_USER: ${DATABASE_USER}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
@@ -17,7 +17,7 @@ services:
 
   bot:
     build: .
-    container_name: aiogram_bot
+    container_name: reclin_bot
     env_file:
       - .env
     depends_on:

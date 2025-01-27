@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from app.db import AsyncSessionLocal
+from app.db.db import AsyncSessionLocal
 from app.utils.helpers import get_user_statistics, export_statistics_to_csv
 
 stats_router = Router()

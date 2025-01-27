@@ -1,7 +1,7 @@
 import logging
 from aiogram import Router, types, F
 from aiogram.filters import CommandStart
-from app.db import AsyncSessionLocal
+from app.db.db import AsyncSessionLocal
 from app.utils.helpers import get_or_create_user
 
 start_router = Router()

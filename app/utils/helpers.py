@@ -2,7 +2,7 @@ import secrets
 import csv
 from datetime import datetime, timedelta
 from sqlalchemy import func, select
-from app.db import User, KeywordLink, Material
+from app.db.models import User, KeywordLink, Material
 
 async def get_or_create_user(session, tg_user):
     db_user = await session.scalar(

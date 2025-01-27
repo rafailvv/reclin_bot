@@ -1,8 +1,8 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from app.db import AsyncSessionLocal
-from app.db import Mailing, User
+from app.db.db import AsyncSessionLocal
+from app.db.models import Mailing, User
 from sqlalchemy import select
 
 async def get_active_mailings(session):

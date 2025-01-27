@@ -1,7 +1,7 @@
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command
-from app.db import AsyncSessionLocal
+from app.db.db import AsyncSessionLocal
 from app.db.models import User
 
 broadcast_router = Router()

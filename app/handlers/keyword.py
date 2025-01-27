@@ -1,6 +1,6 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from app.db import AsyncSessionLocal
+from app.db.db import AsyncSessionLocal
 from app.db.models import Material
 from app.utils.helpers import generate_link_for_material
 
