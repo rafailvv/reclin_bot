@@ -52,4 +52,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    import uvloop
+    uvloop.install()
     asyncio.run(main())
+

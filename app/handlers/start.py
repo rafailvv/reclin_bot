@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from aiogram import Router, types, Bot
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -14,11 +15,12 @@ from app.utils.helpers import get_or_create_user
 start_router = Router()
 
 @start_router.message(CommandStart())
-async def cmd_start(message: types.Message, bot: Bot):
+async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
     """
     /start handler: проверяем наличие параметра ?start=keyword_<unique_link>
     """
     params = message.text.split(maxsplit=1)
+    await state.clear()
     if len(params) > 1:
         start_param = params[1]
         if start_param.startswith("keyword_"):

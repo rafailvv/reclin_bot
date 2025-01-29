@@ -17,7 +17,6 @@ async def get_or_create_user(session, tg_user):
             username_in_tg=tg_user.username,
             first_name=tg_user.first_name or "",
             status="зарегистрирован",
-            category="common",
             last_interaction=datetime.utcnow()
         )
         session.add(new_user)
@@ -57,7 +56,7 @@ async def get_user_statistics(session):
         select(func.count(User.id)).where(User.status != "неактивен")
     )
     # Группировка по категориям
-    cat_stmt = select(User.category, func.count(User.id)).group_by(User.category)
+    cat_stmt = select(User.status, func.count(User.id)).group_by(User.status)
     result = await session.execute(cat_stmt)
     category_data = result.all()
     return {
@@ -155,7 +154,6 @@ async def get_user_info(session, tg_id):
             "tg_id": user.tg_id,
             "first_name": user.first_name,
             "status": user.status,
-            "category": user.category,
             "created_at": user.created_at,
             "last_interaction": user.last_interaction,
         },
@@ -170,4 +168,10 @@ async def get_user_info(session, tg_id):
         ],
     }
 
+async def get_day_of_week_names(number):
+    """
+    Получить название дня недели по его номеру (0-6)
+    """
+    days_of_week = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    return days_of_week[number-1] if 1 <= number < 8 else None
 

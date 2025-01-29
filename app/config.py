@@ -12,6 +12,8 @@ class Config:
     DB_NAME: str = os.getenv("DATABASE_NAME", "postgres")
     DB_PORT: str = os.getenv("DATABASE_PORT", "5432")
 
+    ADMIN_IDS: list[int] = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
+
     @property
     def database_url(self) -> str:
         return (
