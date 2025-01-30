@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
+from app.config import config
 
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule
@@ -61,23 +62,23 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
 @broadcast_router.callback_query(BroadcastStates.CHOOSING_NEW_OR_EXISTING, F.data == "new_mailing")
 async def process_new_mailing(callback: types.CallbackQuery, state: FSMContext):
     """
-    «Новая рассылка» – показываем все статусы пользователей (чекбоксы).
+    «Новая рассылка» – показываем все статусы пользователей (чекбоксы), включая "админы".
     """
     await callback.answer()
 
-    # Получаем список всех уникальных статусов
     async with AsyncSessionLocal() as session:
         result = await session.scalars(select(User.status).distinct().order_by(User.status))
         all_statuses = [s for s in result.all() if s]
 
-    # Запишем в FSM
+    # Добавляем "админы" как виртуальный статус
+    all_statuses.append("админы")
+
     await state.update_data(
         all_statuses=all_statuses,
         selected_statuses={status: False for status in all_statuses}
     )
 
     await edit_statuses_message(callback, state)
-    # Переводим в состояние, где можем кликать по чекбоксам
     await state.set_state(BroadcastStates.CHOOSING_STATUSES)
 
 
@@ -345,12 +346,11 @@ async def once_time_entered(message: types.Message, state: FSMContext):
 # -----------------------------
 async def send_once_broadcast(state: FSMContext, callback_or_message: types.Message | types.CallbackQuery):
     """
-    Вытаскиваем статусы из state, находим пользователей, делаем copy_message.
-    Если не удалось выслать – пишем в лог.
+    Отправляем сообщение пользователям с выбранными статусами.
+    Добавлена обработка статуса "админы".
     """
     data = await state.get_data()
-    # Собираем выбранные статусы
-    selected_statuses = data["selected_statuses"]  # {status: bool}
+    selected_statuses = data["selected_statuses"]
     chosen_statuses = [st for st, val in selected_statuses.items() if val]
     saved_chat_id = data["saved_chat_id"]
     saved_msg_id = data["saved_message_id"]
@@ -361,18 +361,27 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
     else:
         await callback_or_message.answer(text)
 
-    # Находим пользователей с нужными статусами
     async with AsyncSessionLocal() as session:
-        users = await session.scalars(
-            select(User).where(User.status.in_(chosen_statuses))
-        )
-        users_list = users.all()
+        users = []
+        if "админы" in chosen_statuses:
+            # Фильтруем только админов
+            admin_users = await session.scalars(
+                select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))  # Преобразуем в строки
+            )
+            users.extend(admin_users.all())
 
-    # Отправляем каждому copy_message
+        # Добавляем остальных пользователей по выбранным статусам
+        non_admin_statuses = [st for st in chosen_statuses if st != "админы"]
+        if non_admin_statuses:
+            users_by_status = await session.scalars(
+                select(User).where(User.status.in_(non_admin_statuses))
+            )
+            users.extend(users_by_status.all())
+
     bot = callback_or_message.bot if isinstance(callback_or_message, types.CallbackQuery) else callback_or_message.bot
     success_count = 0
     error_count = 0
-    for user in users_list:
+    for user in users:
         if not user.tg_id:
             continue
         try:
@@ -386,7 +395,6 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
             logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
             error_count += 1
 
-    # Выводим результат
     text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
     if isinstance(callback_or_message, types.CallbackQuery):
         await callback_or_message.message.edit_text(text)

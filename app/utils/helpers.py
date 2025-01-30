@@ -2,6 +2,12 @@ import secrets
 import csv
 from datetime import datetime, timedelta
 from sqlalchemy import func, select
+from sqlalchemy import select, func
+import pandas as pd
+from sqlalchemy import select
+from app.db.models import User, MaterialView, Material, MailingStatus
+from datetime import datetime
+
 
 from app.config import config
 from app.db.models import User, KeywordLink, Material, MaterialView
@@ -66,22 +72,60 @@ async def get_user_statistics(session):
     }
 
 
-async def export_statistics_to_csv(session, file_path: str = "stats.csv"):
+
+
+
+async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
     """
-    Экспорт в CSV
+    Экспорт статистики пользователей в Excel с дополнительными данными.
     """
+    # Получаем пользователей
     users = await session.scalars(select(User))
     user_list = users.all()
 
-    with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile, delimiter=";")
-        writer.writerow(["TG ID", "WP ID", "Статус", "Username", "Имя"])
-        for u in user_list:
-            writer.writerow([u.tg_id, u.wp_id, u.status, u.username_in_tg, u.first_name])
+    data = []
+
+    for user in user_list:
+        # Получаем просмотренные материалы
+        views_stmt = (
+            select(Material.keyword, MaterialView.viewed_at)
+            .join(Material, Material.id == MaterialView.material_id)
+            .where(MaterialView.user_id == user.id)
+            .order_by(MaterialView.viewed_at.desc())  # Последние в начале
+        )
+        views_result = await session.execute(views_stmt)
+        views = views_result.all()
+
+        viewed_keywords = [v.keyword for v in views] if views else ["—"]
+        last_viewed_at = views[0].viewed_at if views else None
+
+        # Получаем рассылки, в которых участвует пользователь (по его статусу)
+        mailing_stmt = (
+            select(MailingStatus.mailing_id)
+            .where(MailingStatus.user_status == user.status)
+        )
+        mailing_result = await session.execute(mailing_stmt)
+        mailings = [str(m.mailing_id) for m in mailing_result.all()] if mailing_result else ["—"]
+
+        data.append({
+            "TG ID": user.tg_id,
+            "WP ID": user.wp_id or "—",
+            "Username": f"@{user.username_in_tg}" if user.username_in_tg else "—",
+            "Имя": user.first_name or "—",
+            "Статус": user.status or "—",
+            "Дата регистрации": user.created_at.strftime('%d.%m.%Y %H:%M'),
+            "Последняя активность": user.last_interaction.strftime('%d.%m.%Y %H:%M') if user.last_interaction else "—",
+            "Просмотренные ключевые слова": ", ".join(viewed_keywords),
+            "Последний просмотр": last_viewed_at.strftime('%d.%m.%Y %H:%M') if last_viewed_at else "—",
+            "Подписан на рассылки (по статусу)": ", ".join(mailings),
+        })
+
+    # Создаем DataFrame и записываем в Excel
+    df = pd.DataFrame(data)
+    df.to_excel(file_path, index=False, sheet_name="Статистика пользователей")
 
     return file_path
 
-from sqlalchemy import select, func
 
 async def get_keyword_info(session, keyword):
     """
@@ -107,12 +151,25 @@ async def get_keyword_info(session, keyword):
 
     # Запрос ссылок для ключевого слова
     link_stmt = (
-        select(KeywordLink.link)
+        select(
+            KeywordLink.link,
+            KeywordLink.expiration_date,
+            KeywordLink.max_clicks,
+            KeywordLink.click_count
+        )
         .join(Material, KeywordLink.material_id == Material.id)
         .where(Material.keyword == keyword)
     )
     link_result = await session.execute(link_stmt)
-    links = [row.link for row in link_result]
+
+    links = []
+    for row in link_result:
+        link_info = {
+            "link": row.link,
+            "expiration_date": row.expiration_date,
+            "max_clicks": row.max_clicks
+        }
+        links.append(link_info)
 
     return {
         "keyword": material_data.keyword,
@@ -123,12 +180,20 @@ async def get_keyword_info(session, keyword):
     }
 
 
-async def get_user_info(session, tg_id):
+async def get_user_info(session, query):
     """
     Получить информацию по пользователю и ключевым словам, которые он просматривал.
+    Поддерживает поиск по Telegram ID, username (@username) и имени.
     """
-    # Запрос информации о пользователе
-    user_stmt = select(User).where(User.tg_id == tg_id)
+    user_stmt = None
+
+    if query.isdigit():  # Если введено число, ищем по Telegram ID
+        user_stmt = select(User).where(User.tg_id == int(query))
+    elif query.startswith("@"):  # Если начинается с @, ищем по username
+        user_stmt = select(User).where(User.username_in_tg.ilike(query[1:]))
+    else:  # Ищем по first_name (некоторые пользователи могут быть без username)
+        user_stmt = select(User).where(User.first_name.ilike(f"%{query}%"))
+
     user_result = await session.execute(user_stmt)
     user = user_result.scalars().first()
 
@@ -152,6 +217,7 @@ async def get_user_info(session, tg_id):
     return {
         "user": {
             "tg_id": user.tg_id,
+            "username": user.username_in_tg,  # Добавляем username, если есть
             "first_name": user.first_name,
             "status": user.status,
             "created_at": user.created_at,
@@ -167,6 +233,7 @@ async def get_user_info(session, tg_id):
             for material in viewed_materials
         ],
     }
+
 
 async def get_day_of_week_names(number):
     """

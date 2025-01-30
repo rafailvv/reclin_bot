@@ -1,5 +1,3 @@
-# start.py
-
 import logging
 from datetime import datetime
 from aiogram import Router, types, Bot
@@ -14,19 +12,31 @@ from app.utils.helpers import get_or_create_user
 
 start_router = Router()
 
+
 @start_router.message(CommandStart())
-async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
+async def cmd_start(message: types.Message, bot: Bot, state: FSMContext):
     """
     /start handler: проверяем наличие параметра ?start=keyword_<unique_link>
+    Обновляем последнюю активность пользователя.
     """
     params = message.text.split(maxsplit=1)
     await state.clear()
-    if len(params) > 1:
-        start_param = params[1]
-        if start_param.startswith("keyword_"):
-            link_str = start_param.replace("keyword_", "", 1)
 
-            async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
+        # Получаем или создаём пользователя
+        user = await get_or_create_user(session, message.from_user)
+
+        # Обновляем `last_interaction`
+        user.last_interaction = datetime.utcnow()
+        await session.commit()
+
+        logging.info(f"User {message.from_user.id} started the bot.")
+
+        if len(params) > 1:
+            start_param = params[1]
+            if start_param.startswith("keyword_"):
+                link_str = start_param.replace("keyword_", "", 1)
+
                 # Ищем KeywordLink
                 stmt = (
                     select(KeywordLink)
@@ -42,11 +52,11 @@ async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
                 # Проверяем срок и клики
                 now = datetime.utcnow()
                 if (link_obj.expiration_date and now > link_obj.expiration_date) \
-                   or (link_obj.max_clicks is not None and link_obj.click_count >= link_obj.max_clicks):
+                        or (link_obj.max_clicks is not None and link_obj.click_count >= link_obj.max_clicks):
                     await message.answer("Срок действия ссылки истёк или превышено число кликов.")
                     return
 
-                # Увеличиваем счётчик кликов через SQL-запрос
+                # Увеличиваем счётчик кликов
                 update_stmt = (
                     KeywordLink.__table__.update()
                     .where(KeywordLink.id == link_obj.id)
@@ -60,9 +70,6 @@ async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
                     await message.answer("Материал не найден или некорректен.")
                     return
 
-                # Получаем или создаём пользователя
-                user = await get_or_create_user(session, message.from_user)
-
                 # Сохраняем запись в MaterialView
                 material_view = MaterialView(
                     user_id=user.id,
@@ -71,24 +78,22 @@ async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
                 )
                 session.add(material_view)
 
-                # Коммитим все изменения (увеличение счётчика и запись MaterialView)
+                # Коммитим все изменения (увеличение счётчика, запись MaterialView и обновление last_interaction)
                 await session.commit()
 
                 # Делаем пересылку
                 try:
                     await bot.copy_message(
                         chat_id=message.chat.id,
-                        from_chat_id=material.chat_id,   # откуда пересылаем
-                        message_id=material.message_id   # какое сообщение пересылаем
+                        from_chat_id=material.chat_id,
+                        message_id=material.message_id
                     )
                 except Exception as e:
                     logging.error(f"Не удалось переслать сообщение: {e}")
                     await message.answer("Ошибка, обратитесь к администратору")
                 return
 
-    async with AsyncSessionLocal() as session:
-        user = await get_or_create_user(session, message.from_user)
-        logging.info(f"User {message.from_user.id} started the bot.")
+        # Отправляем приветственное сообщение
         await message.answer(
             f"Привет, {user.first_name or 'друг'}!\n"
             f"Твой статус: {user.status}"
