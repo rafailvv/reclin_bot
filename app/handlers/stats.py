@@ -4,6 +4,8 @@ from datetime import datetime
 
 from aiogram import Router, types, Bot
 from aiogram.filters import Command
+
+from app.config import config
 from app.db.db import AsyncSessionLocal
 from app.utils.helpers import get_user_statistics, get_keyword_info, get_user_info, \
     export_statistics_to_excel
@@ -15,6 +17,8 @@ async def cmd_stats(message: types.Message):
     """
     Показать статистику
     """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
     async with AsyncSessionLocal() as session:
         stats = await get_user_statistics(session)
         reply_text = (
@@ -32,6 +36,8 @@ async def cmd_export_stats(message: types.Message):
     """
     Экспорт статистики пользователей в Excel и отправка файла.
     """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     file_path = f"users_stats_{timestamp}.xlsx"  # Указываем дату и время в названии файла
     message = await message.answer("Ожидайте, собираем информацию...")
@@ -50,6 +56,8 @@ async def cmd_keyword_info(message: types.Message, bot: Bot):
     """
     Получить информацию по ключевому слову.
     """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
     keyword = message.text.split(" ", 1)[-1]  # Ключевое слово передаётся после команды
     async with AsyncSessionLocal() as session:
         info = await get_keyword_info(session, keyword)
@@ -89,11 +97,12 @@ async def cmd_keyword_info(message: types.Message, bot: Bot):
 
 
 @stats_router.message(Command("user_info"))
-@stats_router.message(Command("user_info"))
 async def cmd_user_info(message: types.Message):
     """
     Получить информацию по пользователю (по ID, username или имени).
     """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
     query = message.text.split(" ", 1)[-1].strip()  # Получаем аргумент команды
 
     if not query:
@@ -129,3 +138,23 @@ async def cmd_user_info(message: types.Message):
             )
 
         await message.answer(reply_text, parse_mode="HTML")
+
+@stats_router.message(Command("info"))
+async def cmd_info(message: types.Message):
+    """
+    Отображает список всех доступных команд и их описание.
+    """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
+    info_text = (
+        "🤖 *Доступные команды:*\n\n"
+        "📢 */broadcast* — управление рассылками (создание, редактирование, удаление)\n"
+        "📊 */stats* — статистика пользователей и активности\n"
+        "📂 */export_stats* — экспорт статистики пользователей в Excel\n"
+        "🔑 */keyword_info <ключевое слово>* — информация по ключевому слову\n"
+        "👤 */user_info <ID | @username | имя>* — информация о пользователе\n"
+        "ℹ️ */info* — показать список доступных команд\n\n"
+        "⚡ Используйте команды для управления ботом!"
+    )
+
+    await message.answer(info_text, parse_mode="Markdown")

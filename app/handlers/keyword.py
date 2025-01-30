@@ -11,6 +11,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.orm import NotExtension
 
+from app.config import config
 from app.db.db import AsyncSessionLocal
 from app.db.models import Material
 from app.utils.helpers import generate_link_for_material
@@ -31,6 +32,8 @@ async def cmd_keyword(message: types.Message, state: FSMContext):
     Проверяем, занято ли слово, либо готовим к созданию/обновлению
     и просим у пользователя переслать сообщение.
     """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("Использование: /keyword <слово>")

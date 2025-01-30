@@ -15,6 +15,7 @@ async def mailing_scheduler(bot):
     Периодически проверяем расписания и отправляем рассылку, если настало время.
     """
     while True:
+        await asyncio.sleep(60)  # Проверяем раз в минуту
         logging.info("🔄 Проверка расписаний рассылок...")
         now = datetime.utcnow()
 
@@ -87,8 +88,6 @@ async def mailing_scheduler(bot):
                             schedule.next_run = compute_next_run(schedule)
 
                         await session.commit()
-
-            await asyncio.sleep(5)  # Проверяем раз в минуту
 
         except Exception as e:
             logging.error(f"⚠ Ошибка в планировщике рассылок: {e}")

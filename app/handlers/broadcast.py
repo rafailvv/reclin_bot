@@ -49,6 +49,8 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
     """
     /broadcast - предлагает выбор (Новая / Существующая)
     """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Новая рассылка", callback_data="new_mailing")],
         [InlineKeyboardButton(text="Существующая рассылка", callback_data="existing_mailing")]
