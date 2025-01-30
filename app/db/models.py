@@ -111,3 +111,9 @@ class MailingSchedule(Base):
     active = Column(Integer, default=1)
 
     mailing = relationship("Mailing", back_populates="schedules", lazy="selectin")
+
+    def __repr__(self):
+        return (f"<MailingSchedule(id={self.id}, mailing={self.mailing_id}, type={self.schedule_type}, "
+                f"next={self.next_run}, active={self.active})>")
+
+

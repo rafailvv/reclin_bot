@@ -1,3 +1,5 @@
+# broadcast.py
+
 import logging
 from datetime import datetime, timedelta, time
 from aiogram import Router, types, F
@@ -98,7 +100,6 @@ async def edit_statuses_message(callback: types.CallbackQuery, state: FSMContext
 
     # Редактируем основное сообщение
     main_msg_id = data["main_message_id"]
-    # Здесь для примера просто редактируем текст и клавиатуру
     await callback.message.edit_text(text, reply_markup=kb)
 
 
@@ -261,37 +262,31 @@ async def choose_schedule_type_new(callback: types.CallbackQuery, state: FSMCont
         # Переходим в новое состояние (ждём либо ввода даты, либо коллбэка)
         await state.set_state(BroadcastStates.ENTERING_ONCE_TIME)
 
-
     else:
         await callback.message.edit_text("Неизвестная команда.")
         await state.clear()
+
 
 @broadcast_router.callback_query(BroadcastStates.ENTERING_ONCE_TIME)
 async def once_time_choice_callback(callback: types.CallbackQuery, state: FSMContext):
     if callback.data == "send_once_now":
         # Отправка сразу
-        # Для новой рассылки используем send_once_broadcast
-        # (или если is_edit == True, то send_once_broadcast_existing)
         data = await state.get_data()
         is_edit = data.get("is_edit", False)
         if not is_edit:
             await send_once_broadcast(state, callback)
-            # После отправки выходим из FSM
             await state.clear()
         else:
-            # Существующая рассылка
             await send_once_broadcast_existing(state, callback)
             await state.clear()
 
     elif callback.data == "cancel":
-        # Ничего не делаем, просто завершаем диалог
         await callback.message.edit_text("Действие отменено.")
         await state.clear()
 
     else:
         await callback.answer("Неизвестная команда", show_alert=True)
 
-from datetime import datetime
 
 @broadcast_router.message(BroadcastStates.ENTERING_ONCE_TIME)
 async def once_time_entered(message: types.Message, state: FSMContext):
@@ -306,17 +301,15 @@ async def once_time_entered(message: types.Message, state: FSMContext):
             await message.answer("Указанное время уже прошло. Введите будущее время или нажмите «Отправить сейчас».")
             return
 
-        # Если всё окей, создаём рассылку (или обновляем существующую),
-        # но с типом "once" и next_run = dt
         data = await state.get_data()
         is_edit = data.get("is_edit", False)
 
         if not is_edit:
-            # Новая рассылка
+            # Новая рассылка: создаём запись в БД + расписание
             await create_mailing_in_db(
                 state,
                 schedule_type="once",
-                next_run=dt  # укажем время
+                next_run=dt
             )
             await message.answer(f"Единоразовая рассылка запланирована на {dt} (UTC).")
         else:
@@ -329,7 +322,6 @@ async def once_time_entered(message: types.Message, state: FSMContext):
             )
             await message.answer(f"Для существующей рассылки назначен единоразовый запуск на {dt} (UTC).")
 
-        # Выходим из состояния
         await state.clear()
 
     except ValueError:
@@ -345,10 +337,6 @@ async def once_time_entered(message: types.Message, state: FSMContext):
 #  Отправка единоразовой рассылки (без записи в БД)
 # -----------------------------
 async def send_once_broadcast(state: FSMContext, callback_or_message: types.Message | types.CallbackQuery):
-    """
-    Отправляем сообщение пользователям с выбранными статусами.
-    Добавлена обработка статуса "админы".
-    """
     data = await state.get_data()
     selected_statuses = data["selected_statuses"]
     chosen_statuses = [st for st, val in selected_statuses.items() if val]
@@ -363,14 +351,14 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
 
     async with AsyncSessionLocal() as session:
         users = []
+        # Если среди выбранных статусов есть «админы»
         if "админы" in chosen_statuses:
-            # Фильтруем только админов
             admin_users = await session.scalars(
-                select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))  # Преобразуем в строки
+                select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
             )
             users.extend(admin_users.all())
 
-        # Добавляем остальных пользователей по выбранным статусам
+        # Добавляем остальных пользователей
         non_admin_statuses = [st for st in chosen_statuses if st != "админы"]
         if non_admin_statuses:
             users_by_status = await session.scalars(
@@ -395,11 +383,11 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
             logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
             error_count += 1
 
-    text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
+    final_text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
     if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.edit_text(text)
+        await callback_or_message.message.edit_text(final_text)
     else:
-        await callback_or_message.answer(text)
+        await callback_or_message.answer(final_text)
 
 # -----------------------------
 #  Создание новой рассылки и её расписания
@@ -412,9 +400,6 @@ async def create_mailing_in_db(
     time_of_day: str = None,
     next_run: datetime = None
 ):
-    """
-    Создаём новую запись в Mailing и MailingSchedule.
-    """
     data = await state.get_data()
     title = data["mailing_title"]
     statuses = data["selected_statuses"]
@@ -439,18 +424,18 @@ async def create_mailing_in_db(
             ms = MailingStatus(mailing_id=new_mailing.id, user_status=st)
             session.add(ms)
 
-        # Создаём расписание (если не once)
-        if schedule_type != "once":
-            sch = MailingSchedule(
-                mailing_id=new_mailing.id,
-                schedule_type=schedule_type,
-                day_of_week=day_of_week,
-                day_of_month=day_of_month,
-                time_of_day=time_of_day,
-                next_run=next_run or datetime.utcnow(),
-                active=1
-            )
-            session.add(sch)
+        # Ранее было условие if schedule_type != "once": — УБИРАЕМ ЕГО!
+        # Теперь создаём расписание для любого типа, включая "once".
+        sch = MailingSchedule(
+            mailing_id=new_mailing.id,
+            schedule_type=schedule_type,
+            day_of_week=day_of_week,
+            day_of_month=day_of_month,
+            time_of_day=time_of_day,
+            next_run=next_run or datetime.utcnow(),
+            active=1
+        )
+        session.add(sch)
 
         await session.commit()
 
@@ -505,7 +490,6 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
             elif sch.schedule_type == "weekly":
                 info_lines.append(f"- Тип: <b>еженедельно</b>")
                 wdays = sch.day_of_week.split(',') if sch.day_of_week else []
-                # Внимание на get_day_of_week_names()
                 day_names = []
                 for wd in wdays:
                     try:
@@ -521,7 +505,7 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
                 info_lines.append(f"- Время (UTC): <b>{sch.time_of_day}</b>")
             elif sch.schedule_type == "once":
                 info_lines.append("- Тип: <b>единоразово</b>")
-            info_lines.append(f"- Следующий запуск: <b>{sch.next_run}</b>\n")
+            info_lines.append(f"- Следующий запуск (UTC): <b>{sch.next_run}</b>\n")
     else:
         info_lines.append("Нет активных расписаний.\n")
 
@@ -584,7 +568,7 @@ async def manage_existing_mailing(callback: types.CallbackQuery, state: FSMConte
             [InlineKeyboardButton(text="Ежемесячно", callback_data="schedule_monthly_exists")],
             [InlineKeyboardButton(text="Единоразово", callback_data="schedule_once_exists")],
         ])
-        await state.update_data(is_edit=True)  # Фикс: указываем, что мы редактируем
+        await state.update_data(is_edit=True)
         await callback.message.edit_text("Выберите новый тип расписания:", reply_markup=kb)
         await state.set_state(BroadcastStates.EDITING_EXISTING_SCHEDULE_TYPE)
         await callback.answer()
@@ -598,6 +582,7 @@ async def manage_existing_mailing(callback: types.CallbackQuery, state: FSMConte
         await callback.message.edit_text("Рассылка удалена (деактивирована).")
         await state.clear()
         await callback.answer()
+
     else:
         await callback.answer("Неизвестная команда")
 
@@ -647,7 +632,7 @@ async def editing_existing_schedule_type(callback: types.CallbackQuery, state: F
         await state.set_state(BroadcastStates.ENTERING_MONTHLY_DAYS)
 
     elif data == "schedule_once_exists":
-        # Теперь не рассылаем сразу, а предлагаем то же самое:
+        # То же самое, что и для новой рассылки
         text = (
             "Единоразовая рассылка (редактируем существующую).\n\n"
             "Введите дату и время в формате <b>YYYY-MM-DD HH:MM</b> по UTC, "
@@ -661,7 +646,6 @@ async def editing_existing_schedule_type(callback: types.CallbackQuery, state: F
         ])
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
-        # Ставим флаг is_edit и переводим в общее состояние ENTERING_ONCE_TIME
         await state.update_data(is_edit=True)
         await state.set_state(BroadcastStates.ENTERING_ONCE_TIME)
 
@@ -673,28 +657,32 @@ async def editing_existing_schedule_type(callback: types.CallbackQuery, state: F
 #  Вспомогательная: единоразовая рассылка для существующей
 # -----------------------------
 async def send_once_broadcast_existing(state: FSMContext, callback: types.CallbackQuery):
-    """
-    Для существующей рассылки берём её статусы + сообщение из БД,
-    рассылаем сразу же, не создавая расписание.
-    """
     data = await state.get_data()
     mailing_id = data.get("existing_mailing_id")
     await callback.message.answer("Ожидайте, идет рассылка...")
+
     async with AsyncSessionLocal() as session:
         mailing = await session.get(Mailing, mailing_id)
         if not mailing:
             return
-        # заберём статусы
+        # Статусы
         mail_stats = await session.scalars(
             select(MailingStatus).where(MailingStatus.mailing_id == mailing_id)
         )
         all_statuses = [ms.user_status for ms in mail_stats.all()]
 
-        # находим пользователей
+        # Пользователи
         users = await session.scalars(
             select(User).where(User.status.in_(all_statuses))
         )
         users_list = users.all()
+
+        # Админы, если есть статус "админы"
+        if "админы" in all_statuses:
+            admin_users = await session.scalars(
+                select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
+            )
+            users_list.extend(admin_users.all())
 
     bot = callback.bot
     success_count = 0
@@ -805,7 +793,7 @@ async def entering_weekly_time(message: types.Message, state: FSMContext):
     day_of_week_str = ",".join(str(d) for d in selected_days)
 
     now = datetime.utcnow()
-    # Для первого запуска найдём ближайшую дату
+    # Считаем ближайший запуск (упрощённо)
     first_run = None
     for d in selected_days:
         offset = (d - 1) - now.weekday()
@@ -824,7 +812,6 @@ async def entering_weekly_time(message: types.Message, state: FSMContext):
         first_run += timedelta(weeks=1)
 
     if not is_edit:
-        # Создаём новую рассылку
         await create_mailing_in_db(
             state,
             schedule_type="weekly",
@@ -834,7 +821,6 @@ async def entering_weekly_time(message: types.Message, state: FSMContext):
         )
         await message.answer("Еженедельная рассылка создана!")
     else:
-        # Добавляем новое расписание к существующей рассылке
         mailing_id = data["existing_mailing_id"]
         await add_schedule_for_existing_mailing(
             mailing_id,
@@ -893,9 +879,7 @@ async def entering_monthly_time(message: types.Message, state: FSMContext):
     selected_days = data.get("selected_monthdays", [])
     is_edit = data.get("is_edit", False)
 
-    # Для упрощения – все выбранные даты складываем в одну строку
     day_of_month_str = ",".join(str(d) for d in selected_days)
-
     now = datetime.utcnow()
     first_run = None
     for d in selected_days:
@@ -916,7 +900,6 @@ async def entering_monthly_time(message: types.Message, state: FSMContext):
             first_run = candidate
 
     if not is_edit:
-        # Новая рассылка
         await create_mailing_in_db(
             state,
             schedule_type="monthly",
@@ -926,7 +909,6 @@ async def entering_monthly_time(message: types.Message, state: FSMContext):
         )
         await message.answer("Ежемесячная рассылка создана!")
     else:
-        # Существующая
         mailing_id = data["existing_mailing_id"]
         await add_schedule_for_existing_mailing(
             mailing_id,
@@ -940,14 +922,10 @@ async def entering_monthly_time(message: types.Message, state: FSMContext):
     await state.clear()
 
 # -----------------------------
-#  Ввод времени для ежедневной рассылки (новая/существующая)
+#  Ввод времени для ежедневной рассылки
 # -----------------------------
 @broadcast_router.message(BroadcastStates.ENTERING_DAILY_TIME)
 async def entering_daily_time(message: types.Message, state: FSMContext):
-    """
-    Универсально обрабатываем время для "schedule_daily" и для "schedule_daily_exists"
-    (различаем по is_edit).
-    """
     time_str = message.text.strip()
     try:
         hh, mm = time_str.split(":")
@@ -971,7 +949,6 @@ async def entering_daily_time(message: types.Message, state: FSMContext):
         first_run += timedelta(days=1)
 
     if not is_edit:
-        # Новая рассылка
         await create_mailing_in_db(
             state,
             schedule_type="daily",
@@ -980,7 +957,6 @@ async def entering_daily_time(message: types.Message, state: FSMContext):
         )
         await message.answer("Ежедневная рассылка создана!")
     else:
-        # Существующая
         mailing_id = data["existing_mailing_id"]
         await add_schedule_for_existing_mailing(
             mailing_id,
@@ -1004,7 +980,6 @@ async def add_schedule_for_existing_mailing(
     next_run: datetime = None
 ):
     async with AsyncSessionLocal() as session:
-        # Убедимся, что рассылка активна
         mailing = await session.get(Mailing, mailing_id)
         if not mailing or mailing.active == 0:
             return
