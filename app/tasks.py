@@ -145,7 +145,7 @@ async def update_database(bot):
                         if user.status != status:
                             user.status = status
                             updated = True
-                        if user.created_at != created_at:
+                        if user.created_at is None:
                             user.created_at = created_at
                             updated = True
                         if user.first_name != first_name:

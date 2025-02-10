@@ -1,4 +1,5 @@
 import os
+import hashlib
 from dotenv import load_dotenv
 
 load_dotenv()  # Загрузим .env
@@ -14,9 +15,13 @@ class Config:
 
     ADMIN_IDS: list[int] = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 
-    API_URL : str = os.getenv("API_URL", "https://reclin.ru/wp-json/api/")
-    USERNAME : str = os.getenv("API_USERNAME")
-    PASSWORD : str = os.getenv("API_PASSWORD")
+    API_URL: str = os.getenv("API_URL", "https://reclin.ru/wp-json/api/")
+    USERNAME: str = os.getenv("API_USERNAME")
+    PASSWORD: str = os.getenv("API_PASSWORD")
+
+    # AES ключи для шифрования и расшифровки wp_id
+    AES_KEY: bytes = hashlib.sha256(os.getenv("AES_SECRET_KEY", "default_secret_key").encode()).digest()
+    AES_IV: bytes = os.getenv("AES_IV", "default_iv_12345678").encode()[:16]  # IV должен быть 16 байт
 
     @property
     def database_url(self) -> str:

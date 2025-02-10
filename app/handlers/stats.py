@@ -123,11 +123,12 @@ async def cmd_user_info(message: types.Message):
 
         if user_info.get("username"):
             reply_text += f"Username: @{user_info['username']}\n"
+        if user_info.get("created_at"):
+            reply_text += f"Дата регистрации: <b>{user_info['created_at'].strftime('%d.%m.%Y %H:%M')}</b>\n"
 
         reply_text += (
             f"Имя: <b><a href='tg://user?id={user_info['tg_id']}'>{user_info['first_name']}</a></b>\n"
             f"Статус: <b>{user_info['status']}</b>\n"
-            f"Дата регистрации: <b>{user_info['created_at'].strftime('%d.%m.%Y %H:%M')}</b>\n\n"
             f"Просмотренные материалы:\n"
         )
 

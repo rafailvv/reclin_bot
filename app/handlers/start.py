@@ -13,43 +13,61 @@ from sqlalchemy.orm import joinedload
 from app.config import config
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, KeywordLink, Material, MaterialView
+from app.utils.cryptography import decrypt_wp_id
 from app.utils.helpers import get_or_create_user
 
 start_router = Router()
 
+
 @start_router.message(CommandStart())
-async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
+async def cmd_start(message: types.Message, bot: Bot, state: FSMContext):
     """
-    /start handler: проверяем наличие параметра ?start=keyword_<unique_link>
+    /start handler: проверяем параметры auth_ и keyword_.
     """
     params = message.text.split(maxsplit=1)
     await state.clear()
+
     if len(params) > 1:
         start_param = params[1]
+
+        # Проверяем `auth_`
+        if start_param.startswith("auth_"):
+            encrypted_wp_id = start_param.replace("auth_", "", 1)
+
+            try:
+                decrypted_wp_id = decrypt_wp_id(encrypted_wp_id)  # Расшифровываем
+            except Exception as e:
+                logging.error(f"Ошибка расшифровки wp_id: {e}")
+                await message.answer("Ошибка аутентификации. Попробуйте позже.")
+                return
+
+            async with AsyncSessionLocal() as session:
+                # Получаем или создаем пользователя
+                user = await get_or_create_user(session, message.from_user, decrypted_wp_id)
+                await session.commit()
+
+        # Проверяем `keyword_`
         if start_param.startswith("keyword_"):
             link_str = start_param.replace("keyword_", "", 1)
 
             async with AsyncSessionLocal() as session:
-                # Ищем KeywordLink
                 stmt = (
                     select(KeywordLink)
-                    .join(KeywordLink.material)  # Соединяем таблицы
-                    .where(Material.keyword == link_str)  # Фильтруем по keyword в таблице Material
-                    .options(joinedload(KeywordLink.material))  # Загружаем связанный объект Material
+                    .join(KeywordLink.material)
+                    .where(Material.keyword == link_str)
+                    .options(joinedload(KeywordLink.material))
                 )
                 link_obj = await session.scalar(stmt)
                 if not link_obj:
                     await message.answer("Ссылка не найдена или недействительна.")
                     return
 
-                # Проверяем срок и клики
                 now = datetime.utcnow()
-                if (link_obj.expiration_date and now > link_obj.expiration_date) \
-                   or (link_obj.max_clicks is not None and link_obj.click_count >= link_obj.max_clicks):
+                if (link_obj.expiration_date and now > link_obj.expiration_date) or \
+                        (link_obj.max_clicks is not None and link_obj.click_count >= link_obj.max_clicks):
                     await message.answer("Срок действия ссылки истёк или превышено число кликов.")
                     return
 
-                # Увеличиваем счётчик кликов через SQL-запрос
                 update_stmt = (
                     KeywordLink.__table__.update()
                     .where(KeywordLink.id == link_obj.id)
@@ -57,47 +75,36 @@ async def cmd_start(message: types.Message, bot: Bot,  state: FSMContext):
                 )
                 await session.execute(update_stmt)
 
-                # Получаем Material
                 material = link_obj.material
                 if not material or not material.chat_id or not material.message_id:
                     await message.answer("Материал не найден или некорректен.")
                     return
 
-                # Получаем или создаём пользователя
                 user = await get_or_create_user(session, message.from_user)
-
-                # Сохраняем запись в MaterialView
-                material_view = MaterialView(
-                    user_id=user.id,
-                    material_id=material.id,
-                    viewed_at=datetime.utcnow()
-                )
+                material_view = MaterialView(user_id=user.id, material_id=material.id, viewed_at=datetime.utcnow())
                 session.add(material_view)
-
-                # Коммитим все изменения (увеличение счётчика и запись MaterialView)
                 await session.commit()
 
-                # Делаем пересылку
                 try:
                     await bot.copy_message(
                         chat_id=message.chat.id,
-                        from_chat_id=material.chat_id,   # откуда пересылаем
-                        message_id=material.message_id   # какое сообщение пересылаем
+                        from_chat_id=material.chat_id,
+                        message_id=material.message_id
                     )
                 except Exception as e:
                     logging.error(f"Не удалось переслать сообщение: {e}")
-                    await message.answer("Ошибка, обратитесь к администратору")
+                    await message.answer("Ошибка, обратитесь к администратору.")
                 return
 
     await bot.send_photo(
         chat_id=message.chat.id,
         photo=FSInputFile("app/images/start.jpg"),
         caption=(
-            "Привет! Рады приветствовать вас в нашем чат-боте.\n\n"
-            "Здесь мы будем рассказывать о наших обновлениях, новых рекомендациях и материалах сайта, "
-            "а также дарить вам приятные бонусы от наших партнеров.\n\n"
-            "Через специальное меню вы можете задавать вопросы по техническим проблемам на сайте, "
-            "писать свои замечания и идеи."
+            "Привет! Рады видеть вас в нашем чат-боте.\n\n"
+            "Здесь мы рассказываем об обновлениях, рекомендациях и материалах, "
+            "а также даем приятные бонусы от партнеров.\n\n"
+            "Вы можете задавать вопросы по техническим проблемам, "
+            "делиться замечаниями и идеями."
         )
     )
 
@@ -167,8 +174,8 @@ async def cmd_ideas(message: types.Message, state: FSMContext):
 @start_router.message(UserState.waiting_for_idea)
 async def receive_idea(message: types.Message, bot: Bot, state: FSMContext):
     if message.from_user.username is not None:
-        await bot.send_message(config.ADMIN_IDS[0], f"Пользователь <a href='tg://user?id={message.from_user.url}'>{message.from_user.full_name}</a> (@{message.from_user.username}) отправил идею/ошибку:\n\n{message.text}")
+        await bot.send_message(config.ADMIN_IDS[0], f"Пользователь <a href='{message.from_user.url}'>{message.from_user.full_name}</a> (@{message.from_user.username}) отправил сообщение:\n\n{message.text}")
     else:
-        await bot.send_message(config.ADMIN_IDS[0], f"Пользователь <a href='tg://user?id={message.from_user.url}'>{message.from_user.full_name}</a> отправил идею/ошибку:\n\n{message.text}")
+        await bot.send_message(config.ADMIN_IDS[0], f"Пользователь <a href='{message.from_user.url}'>{message.from_user.full_name}</a> отправил сообщение:\n\n{message.text}")
     await message.answer("Спасибо за Ваше обращение!")
     await state.clear()

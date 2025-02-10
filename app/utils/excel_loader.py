@@ -2,6 +2,10 @@ import logging
 from openpyxl import load_workbook
 from app.db.models import User
 
+from openpyxl import load_workbook
+import logging
+from sqlalchemy import update # Предполагается, что модель User импортирована из модуля models
+
 async def load_initial_data_from_excel(session, file_path: str):
     """
     Считывает Excel-файл (reclin_base.xlsx) и заполняет таблицу User,
@@ -33,7 +37,6 @@ async def load_initial_data_from_excel(session, file_path: str):
                 break
 
             tg_id = str(tg_id_cell.value).strip()
-
             wp_id = str(sheet.cell(row=row_num, column=2).value or "").strip()
             status = str(sheet.cell(row=row_num, column=3).value or "").strip()
             username_in_tg = str(sheet.cell(row=row_num, column=4).value or "").strip()
@@ -50,11 +53,17 @@ async def load_initial_data_from_excel(session, file_path: str):
 
             session.add(user_obj)
             rows_added += 1
-
             row_num += 1
 
+        # Сохраняем добавленные записи в базу данных
         await session.commit()
         logging.info(f"Загрузка из Excel завершена: добавлено {rows_added} пользователь(ей).")
+
+        # После сохранения пробегаемся по всем записям и устанавливаем created_at в None.
+        # Можно использовать массовое обновление через SQL-запрос:
+        await session.execute(update(User).values(created_at=None))
+        await session.commit()
+        logging.info("Поле created_at для всех пользователей установлено в None.")
 
     except FileNotFoundError:
         logging.error(f"Файл '{file_path}' не найден. Пропускаем загрузку из Excel.")

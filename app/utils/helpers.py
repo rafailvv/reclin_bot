@@ -13,26 +13,29 @@ from app.config import config
 from app.db.models import User, KeywordLink, Material, MaterialView
 
 
-async def get_or_create_user(session, tg_user):
-    db_user = await session.scalar(
-        select(func.count(User.id)).where(User.tg_id == str(tg_user.id))
-    )
-    if db_user == 0:
-        new_user = User(
+async def get_or_create_user(session, tg_user, wp_id: str = "не зарегистрирован"):
+    """
+    Получает или создает пользователя в БД.
+    """
+    user = await session.execute(select(User).where(User.tg_id == str(tg_user.id)))
+    user = user.scalar_one_or_none()
+
+    if not user:
+        user = User(
             tg_id=str(tg_user.id),
+            wp_id=wp_id,
             username_in_tg=tg_user.username,
-            first_name=tg_user.first_name or "",
-            status="зарегистрирован",
-            last_interaction=datetime.utcnow()
+            tg_fullname=tg_user.full_name,
+            first_name=tg_user.first_name,
+            last_name=tg_user.last_name,
+            created_at=datetime.utcnow()
         )
-        session.add(new_user)
-        await session.commit()
-        await session.refresh(new_user)
-        return new_user
-    else:
-        return await session.scalar(
-            select(User).where(User.tg_id == str(tg_user.id))
-        )
+        session.add(user)
+
+    elif wp_id and not user.wp_id:
+        user.wp_id = wp_id
+
+    return user
 
 
 async def generate_link_for_material(
@@ -72,9 +75,6 @@ async def get_user_statistics(session):
     }
 
 
-
-
-
 async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
     """
     Экспорт статистики пользователей в Excel с дополнительными данными.
@@ -107,14 +107,25 @@ async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
         mailing_result = await session.execute(mailing_stmt)
         mailings = [str(m.mailing_id) for m in mailing_result.all()] if mailing_result else ["—"]
 
+        # Получаем дату последнего посещения
+        last_visit_stmt = (
+            select(MaterialView.viewed_at)
+            .where(MaterialView.user_id == user.id)
+            .order_by(MaterialView.viewed_at.desc())
+            .limit(1)
+        )
+        last_visit_result = await session.execute(last_visit_stmt)
+        last_visit = last_visit_result.scalar_one_or_none()
+
         data.append({
             "TG ID": user.tg_id,
             "WP ID": user.wp_id or "—",
             "Username": f"@{user.username_in_tg}" if user.username_in_tg else "—",
             "Имя": user.first_name or "—",
             "Статус": user.status or "—",
-            "Дата регистрации": user.created_at.strftime('%d.%m.%Y %H:%M'),
+            "Дата регистрации": user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else "—",
             "Последняя активность": user.last_interaction.strftime('%d.%m.%Y %H:%M') if user.last_interaction else "—",
+            "Дата последнего посещения": last_visit.strftime('%d.%m.%Y %H:%M') if last_visit else "—",
             "Просмотренные ключевые слова": ", ".join(viewed_keywords),
             "Последний просмотр": last_viewed_at.strftime('%d.%m.%Y %H:%M') if last_viewed_at else "—",
             "Подписан на рассылки (по статусу)": ", ".join(mailings),
@@ -125,6 +136,7 @@ async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
     df.to_excel(file_path, index=False, sheet_name="Статистика пользователей")
 
     return file_path
+
 
 
 async def get_keyword_info(session, keyword):

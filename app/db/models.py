@@ -20,7 +20,7 @@ class User(Base):
     last_name = Column(String, nullable=True)
 
     last_interaction = Column(DateTime, nullable=True)  # Дата последнего взаимодействия
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
 
 class Material(Base):
     """

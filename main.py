@@ -16,6 +16,8 @@ from app.handlers.stats import stats_router
 from app.tasks import mailing_scheduler, update_database
 
 from app.utils.excel_loader import load_initial_data_from_excel
+from app.middlewares.logging_lastvisit import LoggingAndLastVisitMiddleware
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,6 +37,8 @@ async def main():
     # Инициализация бота и диспетчера
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
     dp = Dispatcher(storage=MemoryStorage())
+
+    dp.update.middleware(LoggingAndLastVisitMiddleware())
 
     # Подключаем роутеры
     dp.include_router(start_router)
