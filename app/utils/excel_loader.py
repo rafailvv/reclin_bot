@@ -45,7 +45,7 @@ async def load_initial_data_from_excel(session, file_path: str):
                 wp_id=wp_id,
                 status=status,
                 username_in_tg=username_in_tg,
-                first_name=first_name
+                tg_fullname=first_name
             )
 
             session.add(user_obj)

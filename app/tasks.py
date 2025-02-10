@@ -1,7 +1,12 @@
 import asyncio
 import logging
 from datetime import datetime
+
+import aiohttp
+from aiohttp import BasicAuth
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule
 from app.config import config
@@ -93,6 +98,76 @@ async def mailing_scheduler(bot):
             logging.error(f"⚠ Ошибка в планировщике рассылок: {e}")
             await asyncio.sleep(60)  # Если произошла ошибка, ждем минуту перед повтором
 
+async def fetch_users():
+    """
+    Запрашивает список пользователей из API с Basic Auth.
+    """
+    async with aiohttp.ClientSession() as session:
+        auth = BasicAuth(config.USERNAME, config.PASSWORD)
+        try:
+            async with session.get(config.API_URL + "users/", auth=auth) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    print(f"Ошибка запроса: {response.status}")
+                    return None
+        except aiohttp.ClientError as e:
+            print(f"Ошибка сети: {e}")
+            return None
+
+async def update_database(bot):
+    """
+    Обновляет базу данных, проверяя изменения в API.
+    """
+    logging.info("Начало использование обновления БД")
+    while True:
+        async with AsyncSessionLocal() as session:
+            # try:
+                users = await fetch_users()
+                if not users:
+                    logging.info("Не удалось получить данные из API.")
+                    await asyncio.sleep(60 * 5)
+                    continue
+                for user_data in users:
+                    wp_id = user_data.get("id_user")
+                    first_name = user_data.get("name_user")
+                    last_name = user_data.get("surname_user")
+                    status = user_data.get("last_tarif_status")
+                    created_at = datetime.strptime(user_data.get("registration_date"), "%Y-%m-%d %H:%M:%S")
+
+                    # Ищем пользователя в базе данных
+                    result = await session.execute(select(User).where(User.wp_id == wp_id))
+                    user = result.scalars().first()
+
+                    if user:
+                        # Обновляем данные, если есть изменения
+                        updated = False
+                        if user.status != status:
+                            user.status = status
+                            updated = True
+                        if user.created_at != created_at:
+                            user.created_at = created_at
+                            updated = True
+                        if user.first_name != first_name:
+                            user.first_name = first_name
+                            updated = True
+                        if user.last_name != last_name:
+                            user.last_name = last_name
+                            updated = True
+
+                        if updated:
+                            session.add(user)
+
+                await session.commit()
+                logging.info("База данных обновлена.")
+
+            # except SQLAlchemyError as e:
+            #     logging.info(f"Ошибка базы данных: {e}")
+            #     await session.rollback()
+            # except Exception as e:
+            #     logging.info(f"Ошибка при обновлении базы данных: {e}")
+
+        await asyncio.sleep(60 * 5)
 
 
 def compute_next_run(schedule: MailingSchedule) -> datetime:

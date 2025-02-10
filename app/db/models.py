@@ -15,7 +15,9 @@ class User(Base):
     wp_id = Column(String, nullable=True)
     status = Column(String, nullable=True)  # пример: "подписка на 6 месяцев", "зарегистрирован" и т.д.
     username_in_tg = Column(String, nullable=True)
+    tg_fullname = Column(String, nullable=True)
     first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
 
     last_interaction = Column(DateTime, nullable=True)  # Дата последнего взаимодействия
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -14,6 +14,10 @@ class Config:
 
     ADMIN_IDS: list[int] = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 
+    API_URL : str = os.getenv("API_URL", "https://reclin.ru/wp-json/api/")
+    USERNAME : str = os.getenv("API_USERNAME")
+    PASSWORD : str = os.getenv("API_PASSWORD")
+
     @property
     def database_url(self) -> str:
         return (
