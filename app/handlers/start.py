@@ -38,7 +38,6 @@ async def cmd_start(message: types.Message, bot: Bot, state: FSMContext):
                 decrypted_wp_id = decrypt_wp_id(encrypted_wp_id)  # Расшифровываем
             except Exception as e:
                 logging.error(f"Ошибка расшифровки wp_id: {e}")
-                await message.answer("Ошибка аутентификации. Попробуйте позже.")
                 return
 
             async with AsyncSessionLocal() as session:
