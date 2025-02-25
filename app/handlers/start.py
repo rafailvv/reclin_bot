@@ -172,9 +172,10 @@ async def cmd_ideas(message: types.Message, state: FSMContext):
 
 @start_router.message(UserState.waiting_for_idea)
 async def receive_idea(message: types.Message, bot: Bot, state: FSMContext):
-    if message.from_user.username is not None:
-        await bot.send_message(config.ADMIN_IDS[0], f"Пользователь <a href='{message.from_user.url}'>{message.from_user.full_name}</a> (@{message.from_user.username}) отправил сообщение:\n\n{message.text}")
-    else:
-        await bot.send_message(config.ADMIN_IDS[0], f"Пользователь <a href='{message.from_user.url}'>{message.from_user.full_name}</a> отправил сообщение:\n\n{message.text}")
+    for admin_id in config.ADMIN_IDS:
+        if message.from_user.username is not None:
+            await bot.send_message(admin_id, f"Пользователь <a href='{message.from_user.url}'>{message.from_user.full_name}</a> (@{message.from_user.username}) отправил сообщение:\n\n{message.text}")
+        else:
+            await bot.send_message(admin_id, f"Пользователь <a href='{message.from_user.url}'>{message.from_user.full_name}</a> отправил сообщение:\n\n{message.text}")
     await message.answer("Спасибо за Ваше обращение!")
     await state.clear()
