@@ -34,12 +34,18 @@ async def cmd_keyword(message: types.Message, state: FSMContext):
     """
     if message.chat.id not in config.ADMIN_IDS:
         return
+
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("Использование: /keyword <слово>")
         return
 
     keyword = parts[1]
+
+    # Проверка, что слово состоит только из английских букв и цифр
+    if not re.fullmatch(r"[A-Za-z0-9]+", keyword):
+        await message.answer("Ошибка: ключевое слово должно содержать только английские буквы и цифры.")
+        return
 
     async with AsyncSessionLocal() as session:
         stmt = select(Material).where(Material.keyword == keyword)

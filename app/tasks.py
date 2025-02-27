@@ -122,7 +122,7 @@ async def update_database(bot):
     logging.info("Начало использование обновления БД")
     while True:
         async with AsyncSessionLocal() as session:
-            # try:
+            try:
                 users = await fetch_users()
                 if not users:
                     logging.info("Не удалось получить данные из API.")
@@ -161,11 +161,11 @@ async def update_database(bot):
                 await session.commit()
                 logging.info("База данных обновлена.")
 
-            # except SQLAlchemyError as e:
-            #     logging.info(f"Ошибка базы данных: {e}")
-            #     await session.rollback()
-            # except Exception as e:
-            #     logging.info(f"Ошибка при обновлении базы данных: {e}")
+            except SQLAlchemyError as e:
+                logging.info(f"Ошибка базы данных: {e}")
+                await session.rollback()
+            except Exception as e:
+                logging.info(f"Ошибка при обновлении базы данных: {e}")
 
         await asyncio.sleep(60 * 5)
 

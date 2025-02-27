@@ -45,8 +45,8 @@ async def generate_link_for_material(
         expire_in_days: int = None,
         max_clicks: int = None
 ) -> KeywordLink:
-    link_str = f"{config.BOT_LINK}?start=keyword_{keyword}"  # Сгенерировать уникальный "хвост" ссылки
-    expiration_date = datetime.utcnow() + timedelta(days=expire_in_days)
+    link_str = f"{config.BOT_LINK}?start=keyword_{keyword}"
+    expiration_date = datetime.utcnow() + timedelta(days=expire_in_days) if expire_in_days else None
     new_link = KeywordLink(
         link=link_str,
         material_id=material.id,
