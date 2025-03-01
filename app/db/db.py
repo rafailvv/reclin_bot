@@ -16,13 +16,13 @@ async def init_db(Base):
     Удаляет все таблицы, кроме User, и создаёт их заново при запуске.
     """
     async with engine.begin() as conn:
-        # Получаем список таблиц для удаления, исключая User
-        tables_to_drop = [table for table in Base.metadata.sorted_tables if table.name != "users"]
-
-        # Удаляем выбранные таблицы
-        for table in reversed(tables_to_drop):  # Удаляем в обратном порядке зависимостей
-            await conn.run_sync(table.drop)
-        logging.info("Все таблицы, кроме User, удалены.")
+        # # Получаем список таблиц для удаления, исключая User
+        # tables_to_drop = [table for table in Base.metadata.sorted_tables if table.name != "users"]
+        #
+        # # Удаляем выбранные таблицы
+        # for table in reversed(tables_to_drop):  # Удаляем в обратном порядке зависимостей
+        #     await conn.run_sync(table.drop)
+        # logging.info("Все таблицы, кроме User, удалены.")
 
         # Создаём все таблицы заново
         await conn.run_sync(Base.metadata.create_all)
