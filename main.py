@@ -17,7 +17,7 @@ from app.tasks import mailing_scheduler, update_database
 
 from app.utils.excel_loader import load_initial_data_from_excel
 from app.middlewares.logging_lastvisit import LoggingAndLastVisitMiddleware
-
+from app.utils.helpers import bot
 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,7 +35,6 @@ async def main():
             logging.info(f"В таблице User уже есть {count_users} запись(-ей). Пропускаем загрузку Excel.")
 
     # Инициализация бота и диспетчера
-    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.update.middleware(LoggingAndLastVisitMiddleware())

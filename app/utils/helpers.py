@@ -1,6 +1,9 @@
 import secrets
 import csv
 from datetime import datetime, timedelta
+
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
 from sqlalchemy import func, select
 from sqlalchemy import select, func
 import pandas as pd
@@ -38,25 +41,37 @@ async def get_or_create_user(session, tg_user, wp_id: str = "не зарегис
     return user
 
 
-async def generate_link_for_material(
-        session,
-        material: Material,
-        keyword,
-        expire_in_days: int = None,
-        max_clicks: int = None
-) -> KeywordLink:
+async def generate_link_for_material(session, material, keyword, expire_in_days, max_clicks):
     link_str = f"{config.BOT_LINK}?start=keyword_{keyword}"
     expiration_date = datetime.utcnow() + timedelta(days=expire_in_days) if expire_in_days else None
-    new_link = KeywordLink(
-        link=link_str,
-        material_id=material.id,
-        expiration_date=expiration_date,
-        max_clicks=max_clicks
-    )
-    session.add(new_link)
+
+    # Проверяем, существует ли уже объект с таким URL
+    stmt = select(KeywordLink).where(KeywordLink.link == link_str)
+    existing_link = await session.scalar(stmt)
+
+    if existing_link:
+        # Обновляем поля существующего объекта
+        existing_link.material_id = material.id
+        existing_link.expiration_date = expiration_date
+        existing_link.max_clicks = max_clicks
+        # Если нужно сбросить счетчик кликов при обновлении, можно установить его в 0
+        existing_link.click_count = 0
+        link_obj = existing_link
+    else:
+        # Создаем новый объект, если такого URL ещё нет
+        link_obj = KeywordLink(
+            link=link_str,
+            material_id=material.id,
+            expiration_date=expiration_date,
+            max_clicks=max_clicks,
+            click_count=0,
+        )
+        session.add(link_obj)
+
     await session.commit()
-    await session.refresh(new_link)
-    return new_link
+    await session.refresh(link_obj)
+    return link_obj
+
 
 
 async def get_user_statistics(session):
@@ -253,4 +268,6 @@ async def get_day_of_week_names(number):
     """
     days_of_week = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     return days_of_week[number-1] if 1 <= number < 8 else None
+
+bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 

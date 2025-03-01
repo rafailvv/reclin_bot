@@ -1,16 +1,22 @@
+import json
 import logging
 import os
 from datetime import datetime
 
 from aiogram import Router, types, Bot
 from aiogram.filters import Command
+from aiogram.types import MessageEntity, InputMediaPhoto, InputMediaDocument, InputMediaVideo
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from app.config import config
 from app.db.db import AsyncSessionLocal
+from app.db.models import KeywordLink, Material
 from app.utils.helpers import get_user_statistics, get_keyword_info, get_user_info, \
     export_statistics_to_excel
 
 stats_router = Router()
+
 
 @stats_router.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -30,6 +36,7 @@ async def cmd_stats(message: types.Message):
             reply_text += f"  - {cat}: {cnt}\n"
 
         await message.answer(reply_text)
+
 
 @stats_router.message(Command("export_stats"))
 async def cmd_export_stats(message: types.Message):
@@ -51,6 +58,7 @@ async def cmd_export_stats(message: types.Message):
     if os.path.exists(file_path):
         os.remove(file_path)
 
+
 @stats_router.message(Command("keyword_info"))
 async def cmd_keyword_info(message: types.Message, bot: Bot):
     """
@@ -58,23 +66,77 @@ async def cmd_keyword_info(message: types.Message, bot: Bot):
     """
     if message.chat.id not in config.ADMIN_IDS:
         return
+
     keyword = message.text.split(" ", 1)[-1]  # Ключевое слово передаётся после команды
+
     async with AsyncSessionLocal() as session:
         info = await get_keyword_info(session, keyword)
-        if not info:
+        stmt = (
+            select(KeywordLink)
+            .join(KeywordLink.material)
+            .where(Material.keyword == keyword)
+            .options(joinedload(KeywordLink.material))
+        )
+        link_obj = await session.scalar(stmt)
+        if not link_obj:
             await message.answer("Ключевое слово не найдено.")
             return
 
-        try:
-            # Пересылаем сообщение, связанное с ключевым словом
-            await bot.copy_message(
+        material = link_obj.material
+        if not material or not material.chat_id or not material.message_id:
+            await message.answer("Материал не найден или некорректен.")
+            return
+
+        if json.loads(material.file_ids):
+            file_list = json.loads(material.file_ids)
+            input_media = []
+
+            for i, item in enumerate(file_list):
+                entities = (
+                    [MessageEntity(**entity) for entity in json.loads(material.caption_entities)]
+                    if material.caption_entities else None
+                )
+
+                if item["type"] == "photo":
+                    media_obj = InputMediaPhoto(
+                        media=item["file_id"],
+                        caption=material.caption if i == 0 and material.caption else None,
+                        parse_mode=None,
+                        caption_entities=entities if i == 0 and material.caption else None
+                    )
+                elif item["type"] == "document":
+                    media_obj = InputMediaDocument(
+                        media=item["file_id"],
+                        caption=material.caption if i == 0 and material.caption else None,
+                        parse_mode=None,
+                        caption_entities=entities if i == 0 and material.caption else None
+                    )
+                elif item["type"] == "video":
+                    media_obj = InputMediaVideo(
+                        media=item["file_id"],
+                        caption=material.caption if i == 0 and material.caption else None,
+                        parse_mode=None,
+                        caption_entities=entities if i == 0 and material.caption else None
+                    )
+
+                input_media.append(media_obj)
+
+            await bot.send_media_group(
                 chat_id=message.chat.id,
-                from_chat_id=info['chat_id'],  # откуда пересылаем
-                message_id=info['message_id']  # какое сообщение пересылаем
+                media=input_media
             )
-        except Exception as e:
-            logging.error(f"Не удалось переслать сообщение: {e}")
-            await message.answer("Ошибка, обратитесь к администратору")
+        else:
+            entities = (
+                [MessageEntity(**entity) for entity in json.loads(material.caption_entities)]
+                if material.caption_entities else None
+            )
+
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=material.caption,
+                parse_mode=None,
+                entities=entities
+            )
 
         # Формируем текст ответа
         reply_text = (
@@ -88,7 +150,9 @@ async def cmd_keyword_info(message: types.Message, bot: Bot):
                 link_text = f"{link_data['link']}\n"
                 if link_data["expiration_date"]:
                     link_text += f"Действует до: <b>{link_data['expiration_date'].strftime('%d.%m.%Y %H:%M')}</b>\n"
-                link_text += f"Максимальное кол-во кликов: <b>{link_data['max_clicks']}</b>\n"
+                else:
+                    link_text += "Действует <b>без срока действия</b>.\n"
+                link_text += f"Максимальное кол-во кликов: <b>{link_data['max_clicks'] if link_data['max_clicks'] is not None else 'без ограничений'}</b>\n"
                 reply_text += link_text
         else:
             reply_text += "Нет связанных ссылок.\n"
@@ -139,6 +203,7 @@ async def cmd_user_info(message: types.Message):
             )
 
         await message.answer(reply_text, parse_mode="HTML")
+
 
 @stats_router.message(Command("info"))
 async def cmd_info(message: types.Message):

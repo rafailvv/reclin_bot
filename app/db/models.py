@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy.orm import declarative_base, relationship
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Text
 
 Base = declarative_base()
 
@@ -24,15 +24,19 @@ class User(Base):
 
 class Material(Base):
     """
-    Таблица материалов, привязанных к ключевому слову.
-    Храним chat_id + message_id, чтобы потом делать forward.
+    Таблица материалов, привязанных к ключевым словам.
+    Храним chat_id и message_id, чтобы потом делать forward.
+    Дополнительно храним file_ids для обработки медиа-группы и caption текста.
     """
     __tablename__ = "materials"
 
     id = Column(Integer, primary_key=True)
     keyword = Column(String, unique=True, nullable=False)
-    chat_id = Column(String, nullable=True)  # В каком чате лежит сообщение
-    message_id = Column(Integer, nullable=True)  # ID сообщения для forward
+    chat_id = Column(String, nullable=True)  # Идентификатор чата, где находится сообщение
+    message_id = Column(String, nullable=True)  # ID сообщения для forward (при нескольких вложениях хранится как строка)
+    file_ids = Column(Text, nullable=True)  # JSON-строка со списком вложений (тип и file_id)
+    caption = Column(Text, nullable=True)  # Текст подписи, если имеется
+    caption_entities = Column(Text, nullable=True)  # JSON-строка с caption_entities
 
     views = relationship("MaterialView", back_populates="material", lazy="selectin")
     links = relationship("KeywordLink", back_populates="material", lazy="selectin")
