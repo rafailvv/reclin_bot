@@ -34,9 +34,12 @@ async def get_or_create_user(session, tg_user, wp_id: str = "не зарегис
             created_at=datetime.utcnow()
         )
         session.add(user)
+        await session.commit()  # Фиксируем изменения в БД
+        await session.refresh(user)  # Загружаем user с обновленным ID
 
     elif wp_id and not user.wp_id:
         user.wp_id = wp_id
+        await session.commit()  # Сохраняем изменения, если обновили wp_id
 
     return user
 
