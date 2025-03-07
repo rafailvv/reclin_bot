@@ -1,5 +1,3 @@
-# broadcast.py
-
 import logging
 from datetime import datetime, timedelta, time
 from aiogram import Router, types, F
@@ -8,10 +6,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select, func
-from app.config import config
 
+from app.config import config
 from app.db.db import AsyncSessionLocal
-from app.db.models import User, Mailing, MailingStatus, MailingSchedule
+from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
 from app.utils.helpers import get_day_of_week_names
 
 broadcast_router = Router()
@@ -24,6 +22,7 @@ class BroadcastStates(StatesGroup):
 
     # Новая рассылка
     CHOOSING_STATUSES = State()
+    WAITING_FOR_KEYWORD = State()  # новое состояние для ввода ключевого слова
     ENTERING_TITLE = State()
     WAITING_FOR_BROADCAST_MESSAGE = State()
     CHOOSING_SCHEDULE_TYPE = State()
@@ -67,24 +66,40 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
 async def process_new_mailing(callback: types.CallbackQuery, state: FSMContext):
     """
     «Новая рассылка» – показываем все статусы пользователей (чекбоксы), включая "админы".
+    Также добавляется опция «По ключевому слову».
     """
     await callback.answer()
 
     async with AsyncSessionLocal() as session:
         result = await session.scalars(select(User.status).distinct().order_by(User.status))
-        all_statuses = sorted({s.lower() for s in result.all() if s})  # Убираем дубликаты и приводим к нижнему регистру
-
+        all_statuses = sorted({s.lower() for s in result.all() if s})
     # Добавляем "админы" как виртуальный статус
     all_statuses.append("админы")
 
     await state.update_data(
         all_statuses=all_statuses,
-        selected_statuses={status: False for status in all_statuses}
+        selected_statuses={status: False for status in all_statuses},
+        target_type="statuses"  # по умолчанию – по статусам
     )
 
     await edit_statuses_message(callback, state)
     await state.set_state(BroadcastStates.CHOOSING_STATUSES)
 
+def build_statuses_keyboard(all_statuses, selected_dict):
+    """
+    Создаём клавиатуру чекбоксов для всех статусов.
+    Добавлена дополнительная кнопка "По ключевому слову".
+    """
+    buttons = []
+    for st in all_statuses:
+        checked = "✅" if selected_dict.get(st, False) else ""
+        btn_text = f"{checked}{st}"
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"toggle_status_{st}")])
+    # Кнопка «Далее»
+    buttons.append([InlineKeyboardButton(text="Далее", callback_data="statuses_done")])
+    # Новая кнопка «По ключевому слову»
+    buttons.append([InlineKeyboardButton(text="По ключевому слову", callback_data="by_keyword")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def edit_statuses_message(callback: types.CallbackQuery, state: FSMContext):
     """
@@ -96,29 +111,11 @@ async def edit_statuses_message(callback: types.CallbackQuery, state: FSMContext
 
     text = (
         "Выберите статусы пользователей для рассылки.\n"
-        "Нажимайте для (де)активации. Затем нажмите 'Далее'."
+        "Нажимайте для (де)активации. Затем нажмите 'Далее' или выберите 'По ключевому слову'."
     )
     kb = build_statuses_keyboard(all_statuses, selected)
-
-    # Редактируем основное сообщение
     main_msg_id = data["main_message_id"]
     await callback.message.edit_text(text, reply_markup=kb)
-
-
-def build_statuses_keyboard(all_statuses, selected_dict):
-    """
-    Создаём клавиатуру чекбоксов для всех статусов.
-    """
-    buttons = []
-    for st in all_statuses:
-        checked = "✅" if selected_dict.get(st, False) else ""
-        btn_text = f"{checked}{st}"
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"toggle_status_{st}")])
-
-    # Кнопка «Далее»
-    buttons.append([InlineKeyboardButton(text="Далее", callback_data="statuses_done")])
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # -----------------------------
 #  «Существующая рассылка»
@@ -151,14 +148,14 @@ async def process_existing_mailing(callback: types.CallbackQuery, state: FSMCont
     await state.set_state(BroadcastStates.CHOOSING_EXISTING_MAILING)
 
 # -----------------------------
-#  Клик по чекбоксам статусов / кнопке «Далее»
+#  Клик по чекбоксам статусов / кнопке «Далее» / «По ключевому слову»
 # -----------------------------
 @broadcast_router.callback_query(BroadcastStates.CHOOSING_STATUSES)
 async def handle_statuses_callback(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     if callback.data.startswith("toggle_status_"):
-        # переключаем чекбокс
+        # Переключаем чекбокс
         st = callback.data.replace("toggle_status_", "")
         selected = data["selected_statuses"]
         selected[st] = not selected[st]
@@ -167,19 +164,39 @@ async def handle_statuses_callback(callback: types.CallbackQuery, state: FSMCont
         await callback.answer()
 
     elif callback.data == "statuses_done":
-        # проверяем, выбрано ли что-то
         selected = data["selected_statuses"]
         chosen = [st for st, val in selected.items() if val]
         if not chosen:
             await callback.answer("Выберите хотя бы один статус!", show_alert=True)
             return
-
-        # Переходим к запросу «Название рассылки»
         await callback.answer()
         await state.set_state(BroadcastStates.ENTERING_TITLE)
         await callback.message.edit_text("Введите название рассылки:")
+
+    elif callback.data == "by_keyword":
+        # Выбрана рассылка по ключевому слову
+        await state.update_data(target_type="keyword")
+        await callback.message.edit_text("Введите ключевое слово:")
+        await state.set_state(BroadcastStates.WAITING_FOR_KEYWORD)
+        await callback.answer()
+
     else:
         await callback.answer("Неизвестная команда")
+
+# -----------------------------
+#  Обработка ввода ключевого слова (для рассылки по ключевому слову)
+# -----------------------------
+@broadcast_router.message(BroadcastStates.WAITING_FOR_KEYWORD)
+async def process_keyword_input(message: types.Message, state: FSMContext):
+    keyword = message.text.strip()
+    async with AsyncSessionLocal() as session:
+        material = await session.scalar(select(Material).where(Material.keyword == keyword))
+    if not material:
+        await message.answer("Неверное ключевое слово. Попробуйте ещё раз.")
+        return
+    await state.update_data(keyword=keyword)
+    await message.answer(f"Ключевое слово '{keyword}' <b>принято</b>.\nВведите название рассылки:")
+    await state.set_state(BroadcastStates.ENTERING_TITLE)
 
 # -----------------------------
 #  Ввод названия рассылки
@@ -207,7 +224,6 @@ async def receive_broadcast_message(message: types.Message, state: FSMContext):
         saved_message_id=saved_message_id
     )
 
-    # Теперь предлагаем выбрать тип расписания
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Ежедневно", callback_data="schedule_daily")],
         [InlineKeyboardButton(text="Еженедельно", callback_data="schedule_weekly")],
@@ -218,7 +234,6 @@ async def receive_broadcast_message(message: types.Message, state: FSMContext):
         "Сообщение для рассылки сохранено.\nВыберите периодичность:",
         reply_markup=kb
     )
-    # Специально отметим, что мы сейчас создаём новую рассылку
     await state.update_data(is_edit=False)
     await state.set_state(BroadcastStates.CHOOSING_SCHEDULE_TYPE)
 
@@ -247,7 +262,6 @@ async def choose_schedule_type_new(callback: types.CallbackQuery, state: FSMCont
         await state.set_state(BroadcastStates.ENTERING_MONTHLY_DAYS)
 
     elif data == "schedule_once":
-        # Вместо немедленной отправки - предлагаем выбрать: отправить сейчас или ввести время
         text = (
             "Единоразовая рассылка.\n\n"
             "Введите дату и время в формате <b>YYYY-MM-DD HH:MM</b>, "
@@ -260,19 +274,18 @@ async def choose_schedule_type_new(callback: types.CallbackQuery, state: FSMCont
             [InlineKeyboardButton(text="Отмена", callback_data="cancel")]
         ])
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
-        # Переходим в новое состояние (ждём либо ввода даты, либо коллбэка)
         await state.set_state(BroadcastStates.ENTERING_ONCE_TIME)
 
     else:
         await callback.message.edit_text("Неизвестная команда.")
         await state.clear()
 
-
+# -----------------------------
+#  Обработка единоразовой рассылки (отправка сразу)
+# -----------------------------
 @broadcast_router.callback_query(BroadcastStates.ENTERING_ONCE_TIME)
 async def once_time_choice_callback(callback: types.CallbackQuery, state: FSMContext):
     if callback.data == "send_once_now":
-        # Отправка сразу
         data = await state.get_data()
         is_edit = data.get("is_edit", False)
         if not is_edit:
@@ -285,29 +298,22 @@ async def once_time_choice_callback(callback: types.CallbackQuery, state: FSMCon
     elif callback.data == "cancel":
         await callback.message.edit_text("Действие отменено.")
         await state.clear()
-
     else:
         await callback.answer("Неизвестная команда", show_alert=True)
-
 
 @broadcast_router.message(BroadcastStates.ENTERING_ONCE_TIME)
 async def once_time_entered(message: types.Message, state: FSMContext):
     text = message.text.strip()
     try:
-        # Парсим
         dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
-
-        # Проверяем, что дата не в прошлом
         now = datetime.utcnow()
         if dt <= now:
             await message.answer("Указанное время уже прошло. Введите будущее время или нажмите «Отправить сейчас».")
             return
-
         data = await state.get_data()
         is_edit = data.get("is_edit", False)
 
         if not is_edit:
-            # Новая рассылка: создаём запись в БД + расписание
             await create_mailing_in_db(
                 state,
                 schedule_type="once",
@@ -315,7 +321,6 @@ async def once_time_entered(message: types.Message, state: FSMContext):
             )
             await message.answer(f"Единоразовая рассылка запланирована на {dt} (UTC).")
         else:
-            # Существующая рассылка
             mailing_id = data["existing_mailing_id"]
             await add_schedule_for_existing_mailing(
                 mailing_id,
@@ -323,7 +328,6 @@ async def once_time_entered(message: types.Message, state: FSMContext):
                 next_run=dt
             )
             await message.answer(f"Для существующей рассылки назначен единоразовый запуск на {dt} (UTC).")
-
         await state.clear()
 
     except ValueError:
@@ -334,57 +338,61 @@ async def once_time_entered(message: types.Message, state: FSMContext):
             parse_mode="HTML"
         )
 
-
 # -----------------------------
 #  Отправка единоразовой рассылки (без записи в БД)
 # -----------------------------
 async def send_once_broadcast(state: FSMContext, callback_or_message: types.Message | types.CallbackQuery):
     data = await state.get_data()
-    selected_statuses = data["selected_statuses"]
-    chosen_statuses = [st for st, val in selected_statuses.items() if val]
-    saved_chat_id = data["saved_chat_id"]
-    saved_msg_id = data["saved_message_id"]
-
-    text = "Ожидайте, идет рассылка..."
-    if isinstance(callback_or_message, types.CallbackQuery):
-        await callback_or_message.message.edit_text(text)
+    if data.get("target_type") == "keyword":
+        keyword = data.get("keyword")
+        async with AsyncSessionLocal() as session:
+            material = await session.scalar(select(Material).where(Material.keyword == keyword))
+            if not material:
+                if isinstance(callback_or_message, types.CallbackQuery):
+                    await callback_or_message.message.edit_text("Неверное ключевое слово, попробуйте ещё раз.")
+                else:
+                    await callback_or_message.answer("Неверное ключевое слово, попробуйте ещё раз.")
+                return
+            mviews = await session.scalars(select(MaterialView).where(MaterialView.material_id == material.id))
+            mviews_list = mviews.all()
+            user_ids = [mv.user_id for mv in mviews_list]
+            if user_ids:
+                users = await session.scalars(select(User).where(User.id.in_(user_ids)))
+                users_list = users.all()
+            else:
+                users_list = []
     else:
-        await callback_or_message.answer(text)
-
-    async with AsyncSessionLocal() as session:
-        users = []
-        # Если среди выбранных статусов есть «админы»
-        if "админы" in chosen_statuses:
-            admin_users = await session.scalars(
-                select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
-            )
-            users.extend(admin_users.all())
-
-        # Добавляем остальных пользователей
-        non_admin_statuses = [st.lower() for st in chosen_statuses if st.lower() != "админы"]
-        if non_admin_statuses:
-            users_by_status = await session.scalars(
-                select(User).where(func.lower(User.status).in_(non_admin_statuses))
-            )
-            users.extend(users_by_status.all())
-
+        selected_statuses = data["selected_statuses"]
+        chosen_statuses = [st for st, val in selected_statuses.items() if val]
+        users_list = []
+        async with AsyncSessionLocal() as session:
+            if "админы" in chosen_statuses:
+                admin_users = await session.scalars(
+                    select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
+                )
+                users_list.extend(admin_users.all())
+            non_admin_statuses = [st.lower() for st in chosen_statuses if st.lower() != "админы"]
+            if non_admin_statuses:
+                users_by_status = await session.scalars(
+                    select(User).where(func.lower(User.status).in_(non_admin_statuses))
+                )
+                users_list.extend(users_by_status.all())
     bot = callback_or_message.bot if isinstance(callback_or_message, types.CallbackQuery) else callback_or_message.bot
     success_count = 0
     error_count = 0
-    for user in users:
+    for user in users_list:
         if not user.tg_id:
             continue
         try:
             await bot.copy_message(
                 chat_id=user.tg_id,
-                from_chat_id=saved_chat_id,
-                message_id=saved_msg_id
+                from_chat_id=data["saved_chat_id"],
+                message_id=int(data["saved_message_id"])
             )
             success_count += 1
         except Exception as e:
             logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
             error_count += 1
-
     final_text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
     if isinstance(callback_or_message, types.CallbackQuery):
         await callback_or_message.message.edit_text(final_text)
@@ -404,13 +412,10 @@ async def create_mailing_in_db(
 ):
     data = await state.get_data()
     title = data["mailing_title"]
-    statuses = data["selected_statuses"]
-    chosen_statuses = [st for st, val in statuses.items() if val]
     saved_chat_id = data["saved_chat_id"]
     saved_message_id = data["saved_message_id"]
 
     async with AsyncSessionLocal() as session:
-        # Создаём саму рассылку
         new_mailing = Mailing(
             title=title,
             saved_chat_id=saved_chat_id,
@@ -421,13 +426,18 @@ async def create_mailing_in_db(
         session.add(new_mailing)
         await session.flush()  # получим ID
 
-        # Записываем статусы
-        for st in chosen_statuses:
-            ms = MailingStatus(mailing_id=new_mailing.id, user_status=st)
+        # Если рассылка по ключевому слову – сохраняем статус с префиксом "keyword:"
+        if data.get("target_type") == "keyword":
+            keyword_val = data.get("keyword")
+            ms = MailingStatus(mailing_id=new_mailing.id, user_status=f"keyword:{keyword_val}")
             session.add(ms)
+        else:
+            statuses = data["selected_statuses"]
+            chosen_statuses = [st for st, val in statuses.items() if val]
+            for st in chosen_statuses:
+                ms = MailingStatus(mailing_id=new_mailing.id, user_status=st)
+                session.add(ms)
 
-        # Ранее было условие if schedule_type != "once": — УБИРАЕМ ЕГО!
-        # Теперь создаём расписание для любого типа, включая "once".
         sch = MailingSchedule(
             mailing_id=new_mailing.id,
             schedule_type=schedule_type,
@@ -438,7 +448,6 @@ async def create_mailing_in_db(
             active=1
         )
         session.add(sch)
-
         await session.commit()
 
 # -----------------------------
@@ -458,13 +467,11 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
             await state.clear()
             return
 
-        # Сохраняем нужные данные в FSM
         await state.update_data(
             mailing_title=mailing.title,
             existing_mailing_id=mailing_id
         )
 
-        # Забираем все активные расписания
         schedules = (
             await session.scalars(
                 select(MailingSchedule)
@@ -473,7 +480,6 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
             )
         ).all()
 
-        # Забираем статусы, для которых действует рассылка
         mailing_statuses = (
             await session.scalars(
                 select(MailingStatus.user_status)
@@ -481,7 +487,6 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
             )
         ).all()
 
-    # Формируем текст с информацией
     info_lines = [f"Название рассылки: <b>{mailing.title}</b>\n"]
     if schedules:
         info_lines.append("Текущее расписание:")
@@ -520,7 +525,6 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
     final_text = "\n".join(info_lines)
     await callback.message.answer(final_text, parse_mode="HTML")
 
-    # Пробуем скопировать «исходное» сообщение рассылки
     try:
         await callback.bot.copy_message(
             chat_id=callback.message.chat.id,
@@ -531,7 +535,6 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
         logging.warning(f"Не удалось скопировать сообщение: {e}")
         await callback.message.answer("Не удалось скопировать исходное сообщение.")
 
-    # Выводим клавиатуру управления
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Изменить сообщение", callback_data="edit_mailing_message")],
         [InlineKeyboardButton(text="Изменить расписание", callback_data="edit_mailing_schedule")],
@@ -554,7 +557,6 @@ async def manage_existing_mailing(callback: types.CallbackQuery, state: FSMConte
         await callback.answer()
 
     elif callback.data == "edit_mailing_schedule":
-        # Сбрасываем (деактивируем) старые расписания
         async with AsyncSessionLocal() as session:
             schedules = (await session.scalars(
                 select(MailingSchedule).where(MailingSchedule.mailing_id == mailing_id)
@@ -563,7 +565,6 @@ async def manage_existing_mailing(callback: types.CallbackQuery, state: FSMConte
                 s.active = 0
             await session.commit()
 
-        # Предлагаем заново выбрать тип (аналогично «новой рассылке»), но ставим is_edit=True
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Ежедневно", callback_data="schedule_daily_exists")],
             [InlineKeyboardButton(text="Еженедельно", callback_data="schedule_weekly_exists")],
@@ -634,7 +635,6 @@ async def editing_existing_schedule_type(callback: types.CallbackQuery, state: F
         await state.set_state(BroadcastStates.ENTERING_MONTHLY_DAYS)
 
     elif data == "schedule_once_exists":
-        # То же самое, что и для новой рассылки
         text = (
             "Единоразовая рассылка (редактируем существующую).\n\n"
             "Введите дату и время в формате <b>YYYY-MM-DD HH:MM</b> по UTC, "
@@ -647,7 +647,6 @@ async def editing_existing_schedule_type(callback: types.CallbackQuery, state: F
             [InlineKeyboardButton(text="Отмена", callback_data="cancel")]
         ])
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
         await state.update_data(is_edit=True)
         await state.set_state(BroadcastStates.ENTERING_ONCE_TIME)
 
@@ -667,24 +666,39 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
         mailing = await session.get(Mailing, mailing_id)
         if not mailing:
             return
-        # Статусы
         mail_stats = await session.scalars(
             select(MailingStatus).where(MailingStatus.mailing_id == mailing_id)
         )
-        all_statuses = [ms.user_status.lower() for ms in mail_stats.all()]
 
-        # Пользователи
-        users = await session.scalars(
-            select(User).where(func.lower(User.status).in_(all_statuses))
-        )
-        users_list = users.all()
+        # Если рассылка по ключевому слову, то выбираем пользователей, просмотревших материал
+        if any(st.user_status.startswith("keyword:") for st in mail_stats):
+            keyword = [st.user_status for st in mail_stats if st.user_status.startswith("keyword:")][0].split(":", 1)[1]
+            material = await session.scalar(select(Material).where(Material.keyword == keyword))
+            if not material:
+                await callback.message.edit_text("Неверное ключевое слово, попробуйте ещё раз.")
+                return
+            mviews = await session.scalars(select(MaterialView).where(MaterialView.material_id == material.id))
+            mviews_list = mviews.all()
+            user_ids = [mv.user_id for mv in mviews_list]
+            if user_ids:
+                users = await session.scalars(select(User).where(User.id.in_(user_ids)))
+                users_list = users.all()
+            else:
+                users_list = []
+        else:
+            all_statuses = [ms.user_status.lower() for ms in mail_stats.all()]
 
-        # Админы, если есть статус "админы"
-        if "админы" in all_statuses:
-            admin_users = await session.scalars(
-                select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
+            non_admin_statuses = [st for st in all_statuses if st != "админы"]
+            users_list = []
+            users_by_status = await session.scalars(
+                select(User).where(func.lower(User.status).in_(non_admin_statuses))
             )
-            users_list.extend(admin_users.all())
+            users_list.extend(users_by_status.all())
+            if "админы" in all_statuses:
+                admin_users = await session.scalars(
+                    select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
+                )
+                users_list.extend(admin_users.all())
 
     bot = callback.bot
     success_count = 0
@@ -712,9 +726,6 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
 # Универсальные функции: построение клавиатур и т.п.
 # -----------------------------
 def build_weekdays_keyboard(selected_days: list):
-    """
-    Кнопки 1..7 (1=Пн, ... 7=Вс).
-    """
     row = []
     for d in range(1, 8):
         checked = "✅" if d in selected_days else ""
@@ -727,9 +738,6 @@ def build_weekdays_keyboard(selected_days: list):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def build_monthdays_keyboard(selected_days: list):
-    """
-    Кнопки 1..31.
-    """
     rows = []
     row = []
     for d in range(1, 32):
@@ -791,11 +799,8 @@ async def entering_weekly_time(message: types.Message, state: FSMContext):
     selected_days = data.get("selected_weekdays", [])
     is_edit = data.get("is_edit", False)
 
-    # Собираем строку "1,2,5" и т.д.
     day_of_week_str = ",".join(str(d) for d in selected_days)
-
     now = datetime.utcnow()
-    # Считаем ближайший запуск (упрощённо)
     first_run = None
     for d in selected_days:
         offset = (d - 1) - now.weekday()
@@ -887,7 +892,6 @@ async def entering_monthly_time(message: types.Message, state: FSMContext):
     for d in selected_days:
         candidate = datetime(now.year, now.month, d, dt_time.hour, dt_time.minute)
         if candidate <= now:
-            # следующий месяц
             month = now.month + 1
             year = now.year
             if month > 12:

@@ -1,33 +1,32 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from calendar import monthrange
 
 import aiohttp
 from aiohttp import BasicAuth
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.db import AsyncSessionLocal
-from app.db.models import User, Mailing, MailingStatus, MailingSchedule
+from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
 from app.config import config
-
-from datetime import datetime, timedelta
-from calendar import monthrange
 
 
 async def mailing_scheduler(bot):
     """
-    Периодически проверяем расписания и отправляем рассылку, если настало время.
+    Периодически проверяет расписания и отправляет рассылку, если настало время.
+    Теперь поддерживается выбор пользователей для рассылки как по статусу, так и по ключевому слову.
     """
     while True:
-        await asyncio.sleep(60)  # Проверяем раз в минуту
+        await asyncio.sleep(10)  # Проверяем раз в минуту
         logging.info("🔄 Проверка расписаний рассылок...")
         now = datetime.utcnow()
 
         try:
             async with AsyncSessionLocal() as session:
                 async with session.begin():
-                    # Ищем все активные рассылки, у которых next_run <= now
+                    # Ищем все активные расписания, у которых next_run <= now
                     stmt = select(MailingSchedule).where(
                         MailingSchedule.active == 1,
                         MailingSchedule.next_run <= now
@@ -44,32 +43,48 @@ async def mailing_scheduler(bot):
                         if not mailing or mailing.active != 1:
                             continue  # Пропускаем, если рассылка неактивна
 
-                        # Получаем статусы пользователей для рассылки
-                        statuses_stmt = select(MailingStatus).where(
-                            MailingStatus.mailing_id == mailing.id
-                        )
-                        mailing_statuses = (await session.scalars(statuses_stmt)).all()
-                        statuses_list = [ms.user_status for ms in mailing_statuses]
+                        # Получаем статусы рассылки
+                        mailing_statuses = (await session.scalars(
+                            select(MailingStatus).where(MailingStatus.mailing_id == mailing.id)
+                        )).all()
 
-                        # Получаем список пользователей с нужными статусами
-                        users_stmt = select(User).where(User.status.in_(statuses_list))
-                        users = (await session.scalars(users_stmt)).all()
+                        # Если хотя бы один статус начинается с "keyword:", выбираем пользователей по просмотрам материала
+                        if any(st.user_status.startswith("keyword:") for st in mailing_statuses):
+                            keyword = [st.user_status for st in mailing_statuses if st.user_status.startswith("keyword:")][0].split(":", 1)[1]
+                            material = await session.scalar(select(Material).where(Material.keyword == keyword))
+                            if not material:
+                                logging.error(f"Неверное ключевое слово '{keyword}' для рассылки '{mailing.title}'. Пропускаем данную рассылку.")
+                                continue
+                            mviews = await session.scalars(select(MaterialView).where(MaterialView.material_id == material.id))
+                            mviews_list = mviews.all()
+                            user_ids = [mv.user_id for mv in mviews_list]
+                            if user_ids:
+                                users = await session.scalars(select(User).where(User.id.in_(user_ids)))
+                                users_list = users.all()
+                            else:
+                                users_list = []
+                        else:
+                            all_statuses = [ms.user_status.lower() for ms in mailing_statuses]
 
-                        # Если среди статусов есть "админы", добавляем админов в рассылку
-                        if "админы" in statuses_list:
-                            admin_users_stmt = select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
-                            admin_users = (await session.scalars(admin_users_stmt)).all()
-                            users.extend(admin_users)
+                            non_admin_statuses = [st for st in all_statuses if st != "админы"]
+                            users_list = []
+                            users_by_status = await session.scalars(
+                                select(User).where(func.lower(User.status).in_(non_admin_statuses))
+                            )
+                            users_list.extend(users_by_status.all())
+                            if "админы" in all_statuses:
+                                admin_users = await session.scalars(
+                                    select(User).where(User.tg_id.in_(map(str, config.ADMIN_IDS)))
+                                )
+                                users_list.extend(admin_users.all())
 
-                        # Убираем дубликаты пользователей (если вдруг один человек попал по разным статусам)
-                        unique_users = {u.tg_id: u for u in users}.values()
+                        # Убираем дубликаты пользователей по tg_id
+                        unique_users = {u.tg_id: u for u in users_list if u.tg_id}.values()
 
                         # Рассылка сообщений
                         success_count = 0
                         error_count = 0
                         for u in unique_users:
-                            if not u.tg_id:
-                                continue
                             try:
                                 await bot.copy_message(
                                     chat_id=u.tg_id,
@@ -84,7 +99,7 @@ async def mailing_scheduler(bot):
                         logging.info(
                             f"📢 Рассылка '{mailing.title}' завершена: Успешно: {success_count}, Ошибок: {error_count}")
 
-                        # Если рассылка единоразовая, деактивируем ее
+                        # Если рассылка единоразовая, деактивируем её
                         if schedule.schedule_type == "once":
                             schedule.active = 0
                             logging.info(f"🛑 Единоразовая рассылка '{mailing.title}' завершена и деактивирована.")
@@ -97,6 +112,7 @@ async def mailing_scheduler(bot):
         except Exception as e:
             logging.error(f"⚠ Ошибка в планировщике рассылок: {e}")
             await asyncio.sleep(60)  # Если произошла ошибка, ждем минуту перед повтором
+
 
 async def fetch_users():
     """
@@ -114,6 +130,7 @@ async def fetch_users():
         except aiohttp.ClientError as e:
             print(f"Ошибка сети: {e}")
             return None
+
 
 async def update_database(bot):
     """
@@ -140,7 +157,6 @@ async def update_database(bot):
                     user = result.scalars().first()
 
                     if user:
-                        # Обновляем данные, если есть изменения
                         updated = False
                         if user.status != status:
                             user.status = status
@@ -182,7 +198,6 @@ def compute_next_run(schedule: MailingSchedule) -> datetime:
     elif schedule.schedule_type == "weekly":
         if schedule.day_of_week:
             days = sorted(int(d.strip()) for d in schedule.day_of_week.split(","))
-
             for day in days:
                 offset = (day - 1) - schedule.next_run.weekday()
                 if offset <= 0:
@@ -190,39 +205,30 @@ def compute_next_run(schedule: MailingSchedule) -> datetime:
                 candidate = schedule.next_run + timedelta(days=offset)
                 if candidate > now:
                     return candidate
-
             return schedule.next_run + timedelta(days=7)
 
     elif schedule.schedule_type == "monthly":
         if schedule.day_of_month:
             days = sorted(int(d.strip()) for d in schedule.day_of_month.split(","))
-
             for day in days:
                 month, year = schedule.next_run.month, schedule.next_run.year
                 found_valid_date = False
-
                 while not found_valid_date:
                     try:
-                        # Пробуем создать дату с указанным днем
                         candidate = schedule.next_run.replace(day=day, month=month, year=year)
                         if candidate > now:
                             return candidate
                     except ValueError:
-                        # Если день не существует в этом месяце, пробуем следующий месяц
                         pass
-
-                    # Переход на следующий месяц
                     month += 1
                     if month > 12:
                         month = 1
                         year += 1
-
-                    # Проверяем, существует ли такой день в новом месяце
                     last_day_of_month = monthrange(year, month)[1]
                     if day <= last_day_of_month:
                         found_valid_date = True
                         return datetime(year, month, day, schedule.next_run.hour, schedule.next_run.minute)
 
-    # Если тип "once", рассылка больше не должна запускаться
+    # Для единоразовой рассылки деактивируем расписание
     schedule.active = 0
     return now
