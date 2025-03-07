@@ -140,7 +140,7 @@ async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
             "WP ID": user.wp_id or "—",
             "Username": f"@{user.username_in_tg}" if user.username_in_tg else "—",
             "Имя": user.first_name or "—",
-            "Статус": user.status or "—",
+            "Статус": (user.status or "—").lower(),
             "Дата регистрации": user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else "—",
             "Последняя активность": user.last_interaction.strftime('%d.%m.%Y %H:%M') if user.last_interaction else "—",
             "Дата последнего посещения": last_visit.strftime('%d.%m.%Y %H:%M') if last_visit else "—",
