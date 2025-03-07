@@ -16,10 +16,10 @@ from app.config import config
 async def mailing_scheduler(bot):
     """
     Периодически проверяет расписания и отправляет рассылку, если настало время.
-    Теперь поддерживается выбор пользователей для рассылки как по статусу, так и по ключевому слову.
+    Теперь поддерживается выбор пользователей для рассылки как по статусу, так и по ключевым словам (в том числе по нескольким ключевым словам).
     """
     while True:
-        await asyncio.sleep(10)  # Проверяем раз в минуту
+        await asyncio.sleep(10)  # Проверяем раз в 10 секунд
         logging.info("🔄 Проверка расписаний рассылок...")
         now = datetime.utcnow()
 
@@ -49,23 +49,34 @@ async def mailing_scheduler(bot):
                         )).all()
 
                         # Если хотя бы один статус начинается с "keyword:", выбираем пользователей по просмотрам материала
-                        if any(st.user_status.startswith("keyword:") for st in mailing_statuses):
-                            keyword = [st.user_status for st in mailing_statuses if st.user_status.startswith("keyword:")][0].split(":", 1)[1]
-                            material = await session.scalar(select(Material).where(Material.keyword == keyword))
-                            if not material:
-                                logging.error(f"Неверное ключевое слово '{keyword}' для рассылки '{mailing.title}'. Пропускаем данную рассылку.")
+                        if any(ms.user_status.startswith("keyword:") for ms in mailing_statuses):
+                            # Извлекаем все строки с ключевыми словами
+                            keyword_statuses = [ms.user_status for ms in mailing_statuses if ms.user_status.startswith("keyword:")]
+                            # Каждая такая запись считается отдельным ключевым словом
+                            keywords = [s.split(":", 1)[1].strip() for s in keyword_statuses]
+                            if not keywords:
+                                logging.error(f"Ключевые слова не заданы для рассылки '{mailing.title}'. Пропускаем данную рассылку.")
                                 continue
-                            mviews = await session.scalars(select(MaterialView).where(MaterialView.material_id == material.id))
+
+                            # Получаем все материалы, у которых поле keyword совпадает с одним из выбранных ключевых слов
+                            materials_result = await session.scalars(select(Material).where(Material.keyword.in_(keywords)))
+                            materials_list = materials_result.all()
+                            if not materials_list:
+                                logging.error(f"Неверные ключевые слова {keywords} для рассылки '{mailing.title}'. Пропускаем данную рассылку.")
+                                continue
+
+                            material_ids = [material.id for material in materials_list]
+                            mviews = await session.scalars(select(MaterialView).where(MaterialView.material_id.in_(material_ids)))
                             mviews_list = mviews.all()
                             user_ids = [mv.user_id for mv in mviews_list]
                             if user_ids:
-                                users = await session.scalars(select(User).where(User.id.in_(user_ids)))
-                                users_list = users.all()
+                                users_result = await session.scalars(select(User).where(User.id.in_(user_ids)))
+                                users_list = users_result.all()
                             else:
                                 users_list = []
                         else:
+                            # Если таргетинг по статусам
                             all_statuses = [ms.user_status.lower() for ms in mailing_statuses]
-
                             non_admin_statuses = [st for st in all_statuses if st != "админы"]
                             users_list = []
                             users_by_status = await session.scalars(
