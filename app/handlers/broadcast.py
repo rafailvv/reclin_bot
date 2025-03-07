@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.config import config
 
 from app.db.db import AsyncSessionLocal
@@ -72,7 +72,7 @@ async def process_new_mailing(callback: types.CallbackQuery, state: FSMContext):
 
     async with AsyncSessionLocal() as session:
         result = await session.scalars(select(User.status).distinct().order_by(User.status))
-        all_statuses = [s for s in result.all() if s]
+        all_statuses = sorted({s.lower() for s in result.all() if s})  # Убираем дубликаты и приводим к нижнему регистру
 
     # Добавляем "админы" как виртуальный статус
     all_statuses.append("админы")
@@ -361,10 +361,10 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
             users.extend(admin_users.all())
 
         # Добавляем остальных пользователей
-        non_admin_statuses = [st for st in chosen_statuses if st != "админы"]
+        non_admin_statuses = [st.lower() for st in chosen_statuses if st.lower() != "админы"]
         if non_admin_statuses:
             users_by_status = await session.scalars(
-                select(User).where(User.status.in_(non_admin_statuses))
+                select(User).where(func.lower(User.status).in_(non_admin_statuses))
             )
             users.extend(users_by_status.all())
 
@@ -671,11 +671,11 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
         mail_stats = await session.scalars(
             select(MailingStatus).where(MailingStatus.mailing_id == mailing_id)
         )
-        all_statuses = [ms.user_status for ms in mail_stats.all()]
+        all_statuses = [ms.user_status.lower() for ms in mail_stats.all()]
 
         # Пользователи
         users = await session.scalars(
-            select(User).where(User.status.in_(all_statuses))
+            select(User).where(func.lower(User.status).in_(all_statuses))
         )
         users_list = users.all()
 
