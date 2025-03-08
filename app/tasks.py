@@ -22,7 +22,7 @@ async def mailing_scheduler(bot):
     При отправке используются поля file_ids, caption и caption_entities для формирования сообщения.
     """
     while True:
-        await asyncio.sleep(60)  # Проверяем раз в 10 секунд
+        await asyncio.sleep(60)  # Проверяем раз в 60 секунд
         logging.info("🔄 Проверка расписаний рассылок...")
         now = datetime.utcnow()
 
