@@ -25,16 +25,21 @@ async def cmd_stats(message: types.Message):
         return
     async with AsyncSessionLocal() as session:
         stats = await get_user_statistics(session)
+        # Агрегируем категории, приводим к нижнему регистру и заменяем None на "не зарегистрированы"
+        aggregated_categories = {}
+        for cat, cnt in stats["category_data"]:
+            key = "не зарегистрированы" if cat is None else cat.lower()
+            aggregated_categories[key] = aggregated_categories.get(key, 0) + cnt
+
         reply_text = (
             f"Общее количество пользователей: {stats['total_users']}\n"
             f"Активных: {stats['active_users']}\n"
             "Пользователи по категориям:\n"
         )
-        for cat, cnt in stats["category_data"]:
+        for cat, cnt in aggregated_categories.items():
             reply_text += f"  - {cat}: {cnt}\n"
 
         await message.answer(reply_text)
-
 
 @stats_router.message(Command("export_stats"))
 async def cmd_export_stats(message: types.Message):
