@@ -16,6 +16,45 @@ from app.utils.helpers import get_user_statistics, get_keyword_info, get_user_in
 
 stats_router = Router()
 
+@stats_router.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    """
+    Показать статистику
+    """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
+    async with AsyncSessionLocal() as session:
+        stats = await get_user_statistics(session)
+        reply_text = (
+            f"Общее количество пользователей: {stats['total_users']}\n"
+            f"Активных: {stats['active_users']}\n"
+            "Пользователи по категориям:\n"
+        )
+        for cat, cnt in stats["category_data"]:
+            reply_text += f"  - {cat}: {cnt}\n"
+
+        await message.answer(reply_text)
+
+
+@stats_router.message(Command("export_stats"))
+async def cmd_export_stats(message: types.Message):
+    """
+    Экспорт статистики пользователей в Excel и отправка файла.
+    """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    file_path = f"users_stats_{timestamp}.xlsx"  # Указываем дату и время в названии файла
+    message = await message.answer("Ожидайте, собираем информацию...")
+    async with AsyncSessionLocal() as session:
+        file_path = await export_statistics_to_excel(session, file_path)
+    await message.delete()
+    # Отправляем файл пользователю
+    await message.answer_document(document=types.FSInputFile(file_path))
+
+    # Удаляем файл после отправки (чтобы не засорять сервер)
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
 async def send_keyword_info(chat_id: int, keyword: str, bot: Bot):
     """
