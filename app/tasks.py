@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 from datetime import datetime, timedelta
 from calendar import monthrange
 
@@ -11,12 +12,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
 from app.config import config
+from aiogram.types import MessageEntity, InputMediaPhoto, InputMediaDocument, InputMediaVideo
 
 
 async def mailing_scheduler(bot):
     """
     Периодически проверяет расписания и отправляет рассылку, если настало время.
     Теперь поддерживается выбор пользователей для рассылки как по статусу, так и по ключевым словам (в том числе по нескольким ключевым словам).
+    При отправке используются поля file_ids, caption и caption_entities для формирования сообщения.
     """
     while True:
         await asyncio.sleep(60)  # Проверяем раз в 60 секунд
@@ -50,15 +53,12 @@ async def mailing_scheduler(bot):
 
                         # Если хотя бы один статус начинается с "keyword:", выбираем пользователей по просмотрам материала
                         if any(ms.user_status.startswith("keyword:") for ms in mailing_statuses):
-                            # Извлекаем все строки с ключевыми словами
                             keyword_statuses = [ms.user_status for ms in mailing_statuses if ms.user_status.startswith("keyword:")]
-                            # Каждая такая запись считается отдельным ключевым словом
                             keywords = [s.split(":", 1)[1].strip() for s in keyword_statuses]
                             if not keywords:
                                 logging.error(f"Ключевые слова не заданы для рассылки '{mailing.title}'. Пропускаем данную рассылку.")
                                 continue
 
-                            # Получаем все материалы, у которых поле keyword совпадает с одним из выбранных ключевых слов
                             materials_result = await session.scalars(select(Material).where(Material.keyword.in_(keywords)))
                             materials_list = materials_result.all()
                             if not materials_list:
@@ -75,7 +75,7 @@ async def mailing_scheduler(bot):
                             else:
                                 users_list = []
                         else:
-                            # Если таргетинг по статусам
+                            # Таргетинг по статусам
                             all_statuses = [ms.user_status.lower() for ms in mailing_statuses]
                             non_admin_statuses = [st for st in all_statuses if st != "админы"]
                             users_list = []
@@ -90,18 +90,80 @@ async def mailing_scheduler(bot):
                                 users_list.extend(admin_users.all())
 
                         # Убираем дубликаты пользователей по tg_id
-                        unique_users = {u.tg_id: u for u in users_list if u.tg_id}.values()
+                        unique_users = set({u.tg_id: u for u in users_list if u.tg_id}.values())
 
-                        # Рассылка сообщений
+                        # Рассылка сообщений с учетом вложений, caption и caption_entities
                         success_count = 0
                         error_count = 0
                         for u in unique_users:
                             try:
-                                await bot.copy_message(
-                                    chat_id=u.tg_id,
-                                    from_chat_id=mailing.saved_chat_id,
-                                    message_id=mailing.saved_message_id
-                                )
+                                attachments = json.loads(mailing.file_ids)
+                                entities = None
+                                if mailing.caption_entities:
+                                    try:
+                                        entities = [MessageEntity(**entity) for entity in json.loads(mailing.caption_entities)]
+                                    except Exception as e:
+                                        logging.error(f"Ошибка парсинга caption_entities: {e}")
+                                        entities = None
+                                if attachments and len(attachments) > 1:
+                                    input_media = []
+                                    for idx, att in enumerate(attachments):
+                                        if att["type"] == "photo":
+                                            media_obj = InputMediaPhoto(
+                                                media=att["file_id"],
+                                                caption=mailing.caption if (idx == 0 and mailing.caption) else None,
+                                                caption_entities=entities if (idx == 0 and mailing.caption) else None,
+                                                parse_mode=None,
+                                            )
+                                        elif att["type"] == "document":
+                                            media_obj = InputMediaDocument(
+                                                media=att["file_id"],
+                                                caption=mailing.caption if (idx == 0 and mailing.caption) else None,
+                                                caption_entities=entities if (idx == 0 and mailing.caption) else None,
+                                                parse_mode=None,
+                                            )
+                                        elif att["type"] == "video":
+                                            media_obj = InputMediaVideo(
+                                                media=att["file_id"],
+                                                caption=mailing.caption if (idx == 0 and mailing.caption) else None,
+                                                caption_entities=entities if (idx == 0 and mailing.caption) else None,
+                                                parse_mode=None,
+                                            )
+                                        input_media.append(media_obj)
+                                    await bot.send_media_group(chat_id=u.tg_id, media=input_media)
+                                elif attachments and len(attachments) == 1:
+                                    att = attachments[0]
+                                    if att["type"] == "photo":
+                                        await bot.send_photo(
+                                            chat_id=u.tg_id,
+                                            photo=att["file_id"],
+                                            caption=mailing.caption,
+                                            caption_entities=entities,
+                                            parse_mode=None,
+                                        )
+                                    elif att["type"] == "document":
+                                        await bot.send_document(
+                                            chat_id=u.tg_id,
+                                            document=att["file_id"],
+                                            caption=mailing.caption,
+                                            caption_entities=entities,
+                                            parse_mode=None,
+                                        )
+                                    elif att["type"] == "video":
+                                        await bot.send_video(
+                                            chat_id=u.tg_id,
+                                            video=att["file_id"],
+                                            caption=mailing.caption,
+                                            caption_entities=entities,
+                                            parse_mode=None,
+                                        )
+                                else:
+                                    await bot.send_message(
+                                        chat_id=u.tg_id,
+                                        text=mailing.caption,
+                                        entities=entities,
+                                        parse_mode=None,
+                                    )
                                 success_count += 1
                             except Exception as e:
                                 logging.warning(f"❌ Ошибка отправки пользователю {u.tg_id}: {e}")
@@ -115,7 +177,7 @@ async def mailing_scheduler(bot):
                             schedule.active = 0
                             logging.info(f"🛑 Единоразовая рассылка '{mailing.title}' завершена и деактивирована.")
                         else:
-                            # Пересчитываем `next_run` для следующего запуска
+                            # Пересчитываем next_run для следующего запуска
                             schedule.next_run = compute_next_run(schedule)
 
                         await session.commit()

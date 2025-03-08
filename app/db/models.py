@@ -79,11 +79,15 @@ class Mailing(Base):
     title = Column(String, nullable=False)
     saved_chat_id = Column(String, nullable=True)
     saved_message_id = Column(String, nullable=True)
+    file_ids = Column(Text, nullable=True)           # JSON-строка со списком вложений (тип и file_id)
+    caption = Column(Text, nullable=True)              # Текст подписи, если имеется
+    caption_entities = Column(Text, nullable=True)     # JSON-строка с caption_entities
     active = Column(Integer, default=1)  # 1 = активна, 0 = нет
     created_at = Column(DateTime, default=datetime.utcnow)
 
     statuses = relationship("MailingStatus", back_populates="mailing", cascade="all, delete-orphan", lazy="selectin")
     schedules = relationship("MailingSchedule", back_populates="mailing", cascade="all, delete-orphan", lazy="selectin")
+
 
 class MailingStatus(Base):
     """
