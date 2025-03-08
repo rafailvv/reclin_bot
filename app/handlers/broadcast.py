@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, time
 from calendar import monthrange
@@ -6,13 +8,14 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaVideo, InputMediaDocument, \
+    InputMediaPhoto, MessageEntity
 from sqlalchemy import select, func
 
 from app.config import config
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
-from app.utils.helpers import get_day_of_week_names
+from app.utils.helpers import get_day_of_week_names, bot
 
 broadcast_router = Router()
 
@@ -20,6 +23,9 @@ broadcast_router = Router()
 # Шаги FSM
 # -----------------------------
 class BroadcastStates(StatesGroup):
+    # WAITING_FOR_BROADCAST_MESSAGE = "waiting_for_broadcast_message"
+    # CHOOSING_SCHEDULE_TYPE = "choosing_schedule_type"
+
     CHOOSING_NEW_OR_EXISTING = State()
     CHOOSING_TARGET_TYPE = State()       # новый шаг: выбор типа рассылки
     CHOOSING_STATUSES = State()          # для рассылки по статусам пользователей
@@ -40,6 +46,54 @@ class BroadcastStates(StatesGroup):
     EDITING_EXISTING_MESSAGE = State()
     EDITING_EXISTING_SCHEDULE_TYPE = State()
 
+async def process_media_group_broadcast(media_group_id: str, state: FSMContext, trigger_message: types.Message):
+    """
+    Ждёт 1 секунду для накопления всех сообщений из media‑группы,
+    агрегирует вложения и сохраняет данные: file_ids, caption, caption_entities.
+    """
+    await bot.send_chat_action(trigger_message.chat.id, "typing")
+    await asyncio.sleep(1)  # Ждём, чтобы собрать все сообщения группы
+    data = await state.get_data()
+    media_group = data.get("media_group", [])
+    if media_group:
+        file_list = []
+        caption = ""
+        caption_entities = None
+        # Извлекаем caption из первого сообщения с текстом
+        for mg in media_group:
+            if mg.caption or mg.text:
+                caption = mg.caption or mg.text
+                if mg.caption_entities:
+                    caption_entities = [entity.dict() for entity in mg.caption_entities]
+                break
+        # Собираем вложения из всех сообщений группы
+        for msg in media_group:
+            if msg.photo:
+                file_list.append({"type": "photo", "file_id": msg.photo[-1].file_id})
+            elif msg.document:
+                file_list.append({"type": "document", "file_id": msg.document.file_id})
+            elif msg.video:
+                file_list.append({"type": "video", "file_id": msg.video.file_id})
+        chat_id = media_group[0].chat.id
+        message_ids = [msg.message_id for msg in media_group]
+        await state.update_data(
+            saved_chat_id=str(chat_id),
+            # Если необходимо, можно сохранить все id, либо объединить их в строку:
+            saved_message_id=",".join(str(mid) for mid in message_ids),
+            file_ids=json.dumps(file_list),
+            caption=caption,
+            caption_entities=json.dumps(caption_entities) if caption_entities else None
+        )
+        # Очищаем временные данные по группе
+        await state.update_data(media_group=[])
+        await trigger_message.answer("Сообщение для рассылки сохранено.\nВыберите периодичность:",
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                         [InlineKeyboardButton(text="Ежедневно", callback_data="schedule_daily")],
+                                         [InlineKeyboardButton(text="Еженедельно", callback_data="schedule_weekly")],
+                                         [InlineKeyboardButton(text="Ежемесячно", callback_data="schedule_monthly")],
+                                         [InlineKeyboardButton(text="Единоразово", callback_data="schedule_once")]
+                                     ]))
+        await state.set_state(BroadcastStates.CHOOSING_SCHEDULE_TYPE)
 
 # -----------------------------
 #  Команда /broadcast
@@ -254,21 +308,62 @@ async def enter_mailing_title(message: types.Message, state: FSMContext):
 # -----------------------------
 @broadcast_router.message(BroadcastStates.WAITING_FOR_BROADCAST_MESSAGE)
 async def receive_broadcast_message(message: types.Message, state: FSMContext):
-    saved_chat_id = str(message.chat.id)
-    saved_message_id = str(message.message_id)
-    await state.update_data(
-        saved_chat_id=saved_chat_id,
-        saved_message_id=saved_message_id
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ежедневно", callback_data="schedule_daily")],
-        [InlineKeyboardButton(text="Еженедельно", callback_data="schedule_weekly")],
-        [InlineKeyboardButton(text="Ежемесячно", callback_data="schedule_monthly")],
-        [InlineKeyboardButton(text="Единоразово", callback_data="schedule_once")]
-    ])
-    await message.answer("Сообщение для рассылки сохранено.\nВыберите периодичность:", reply_markup=kb)
-    await state.update_data(is_edit=False)
-    await state.set_state(BroadcastStates.CHOOSING_SCHEDULE_TYPE)
+    """
+    Обрабатывает входящее сообщение для рассылки.
+    Если сообщение является частью media‑группы – ждёт, иначе сразу сохраняет данные.
+    Обновлённая логика загрузки фото (как в editing_existing_message) теперь
+    проверяет, если фото пришло как документ с MIME‑типом, начинающимся на "image/".
+    """
+    await bot.send_chat_action(message.chat.id, "typing")
+    if message.media_group_id:
+        data = await state.get_data()
+        media_group = data.get("media_group", [])
+        media_group.append(message)
+        await state.update_data(media_group=media_group)
+        if len(media_group) == 1:
+            # Запускаем задачу для обработки всей группы
+            asyncio.create_task(process_media_group_broadcast(message.media_group_id, state, message))
+        return
+    else:
+        file_list = []
+        caption = message.caption or message.text or ""
+        if message.caption_entities:
+            caption_entities = [entity.dict() for entity in message.caption_entities]
+        elif message.entities:
+            caption_entities = [entity.dict() for entity in message.entities]
+        else:
+            caption_entities = None
+
+        if message.photo:
+            # Если фото, выбираем последний (наивысшее качество)
+            file_list.append({"type": "photo", "file_id": message.photo[-1].file_id})
+        elif message.document:
+            # Если документ, проверяем MIME‑тип – если это изображение, обрабатываем как фото
+            if message.document.mime_type and message.document.mime_type.startswith("image/"):
+                file_list.append({"type": "photo", "file_id": message.document.file_id})
+            else:
+                file_list.append({"type": "document", "file_id": message.document.file_id})
+        elif message.video:
+            file_list.append({"type": "video", "file_id": message.video.file_id})
+
+        await state.update_data(
+            saved_chat_id=str(message.chat.id),
+            saved_message_id=str(message.message_id),
+            file_ids=json.dumps(file_list),
+            caption=caption,
+            caption_entities=json.dumps(caption_entities) if caption_entities else None
+        )
+        await message.answer(
+            "Сообщение для рассылки сохранено.\nВыберите периодичность:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Ежедневно", callback_data="schedule_daily")],
+                [InlineKeyboardButton(text="Еженедельно", callback_data="schedule_weekly")],
+                [InlineKeyboardButton(text="Ежемесячно", callback_data="schedule_monthly")],
+                [InlineKeyboardButton(text="Единоразово", callback_data="schedule_once")]
+            ])
+        )
+        await state.set_state(BroadcastStates.CHOOSING_SCHEDULE_TYPE)
+
 
 
 # -----------------------------
@@ -397,19 +492,64 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
     bot = callback_or_message.bot if isinstance(callback_or_message, types.CallbackQuery) else callback_or_message.bot
     success_count = 0
     error_count = 0
-    for user in users_list:
-        if not user.tg_id:
-            continue
+
+    # Извлекаем данные для отправки
+    saved_chat_id = data.get("saved_chat_id")
+    saved_message_id = data.get("saved_message_id")
+    file_ids = data.get("file_ids")
+    caption = data.get("caption")
+    caption_entities_raw = data.get("caption_entities")
+    entities = None
+    if caption_entities_raw:
         try:
-            await bot.copy_message(
-                chat_id=user.tg_id,
-                from_chat_id=data["saved_chat_id"],
-                message_id=int(data["saved_message_id"])
-            )
+            entities = [MessageEntity(**entity) for entity in json.loads(caption_entities_raw)]
+        except Exception as e:
+            logging.error(f"Ошибка парсинга caption_entities: {e}")
+            entities = None
+
+    tg_ids = set([user.tg_id for user in users_list if user.tg_id])
+    for tg_id in tg_ids:
+        try:
+            # if file_ids:
+            attachments = json.loads(file_ids)
+            if attachments:
+                input_media = []
+                for idx, att in enumerate(attachments):
+                    if att["type"] == "photo":
+                        media_obj = InputMediaPhoto(
+                            media=att["file_id"],
+                            caption=caption if (idx == 0 and caption) else None,
+                            caption_entities=entities if (idx == 0 and caption) else None,
+                            parse_mode=None,
+                        )
+                    elif att["type"] == "document":
+                        media_obj = InputMediaDocument(
+                            media=att["file_id"],
+                            caption=caption if (idx == 0 and caption) else None,
+                            caption_entities=entities if (idx == 0 and caption) else None,
+                            parse_mode=None,
+                        )
+                    elif att["type"] == "video":
+                        media_obj = InputMediaVideo(
+                            media=att["file_id"],
+                            caption=caption if (idx == 0 and caption) else None,
+                            caption_entities=entities if (idx == 0 and caption) else None,
+                            parse_mode=None,
+                        )
+                    input_media.append(media_obj)
+                await bot.send_media_group(chat_id=tg_id, media=input_media)
+            else:
+                await bot.send_message(
+                    chat_id=tg_id,
+                    text=caption,
+                    entities=entities,
+                    parse_mode=None
+                )
             success_count += 1
         except Exception as e:
             logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
             error_count += 1
+
     final_text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
     if isinstance(callback_or_message, types.CallbackQuery):
         await callback_or_message.message.edit_text(final_text)
@@ -417,36 +557,53 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
         await callback_or_message.answer(final_text)
 
 
+
 # -----------------------------
 #  Создание новой рассылки и её расписания
 # -----------------------------
-async def create_mailing_in_db(state: FSMContext, schedule_type: str, day_of_week: str = None,
-                               day_of_month: str = None, time_of_day: str = None, next_run: datetime = None):
+async def create_mailing_in_db(
+    state: FSMContext,
+    schedule_type: str,
+    day_of_week: str = None,
+    day_of_month: str = None,
+    time_of_day: str = None,
+    next_run: datetime = None
+):
     data = await state.get_data()
     title = data["mailing_title"]
     saved_chat_id = data["saved_chat_id"]
     saved_message_id = data["saved_message_id"]
+    # Добавляем сохранение дополнительных полей (вложения и текст)
+    file_ids = data.get("file_ids")
+    caption = data.get("caption")
+    caption_entities = data.get("caption_entities")
+
     async with AsyncSessionLocal() as session:
         new_mailing = Mailing(
             title=title,
             saved_chat_id=saved_chat_id,
             saved_message_id=saved_message_id,
+            file_ids=file_ids,
+            caption=caption,
+            caption_entities=caption_entities,
             active=1,
             created_at=datetime.utcnow()
         )
         session.add(new_mailing)
-        await session.flush()  # получим ID
+        await session.flush()  # получим ID рассылки
+
         if data.get("target_type") == "keywords":
-            keywords = data.get("keywords")
+            keywords = data.get("keywords") or []
             for kw in keywords:
                 ms = MailingStatus(mailing_id=new_mailing.id, user_status=f"keyword:{kw}")
                 session.add(ms)
         else:
-            statuses = data["selected_statuses"]
+            statuses = data.get("selected_statuses", {})
             chosen_statuses = [st for st, val in statuses.items() if val]
             for st in chosen_statuses:
                 ms = MailingStatus(mailing_id=new_mailing.id, user_status=st)
                 session.add(ms)
+
         sch = MailingSchedule(
             mailing_id=new_mailing.id,
             schedule_type=schedule_type,
@@ -458,6 +615,7 @@ async def create_mailing_in_db(state: FSMContext, schedule_type: str, day_of_wee
         )
         session.add(sch)
         await session.commit()
+
 
 
 # -----------------------------
@@ -481,8 +639,10 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
             .where(MailingSchedule.mailing_id == mailing_id, MailingSchedule.active == 1)
         )).all()
         mailing_statuses = (await session.scalars(
-            select(MailingStatus.user_status).where(MailingStatus.mailing_id == mailing_id)
+            select(MailingStatus.user_status)
+            .where(MailingStatus.mailing_id == mailing_id)
         )).all()
+
     info_lines = [f"Название рассылки: <b>{mailing.title}</b>\n"]
     if schedules:
         info_lines.append("Текущее расписание:")
@@ -498,7 +658,7 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
                     try:
                         day_int = int(wd)
                         day_names.append(await get_day_of_week_names(day_int))
-                    except:
+                    except Exception:
                         pass
                 info_lines.append(f"- Дни недели: <b>{', '.join(day_names)}</b>")
                 info_lines.append(f"- Время (UTC): <b>{sch.time_of_day}</b>")
@@ -512,21 +672,75 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
     else:
         info_lines.append("Нет активных расписаний.\n")
     if mailing_statuses:
-        info_lines.append("Статусы пользователей для рассылки:")
-        info_lines.append(", ".join([f"<b>{status}</b>" for status in mailing_statuses]))
+        # Разделяем статусы и ключевые слова
+        normal_statuses = [status for status in mailing_statuses if not status.startswith("keyword:")]
+        keyword_statuses = [status.split("keyword:", 1)[1] for status in mailing_statuses if
+                            status.startswith("keyword:")]
+
+        if normal_statuses:
+            info_lines.append("Статусы пользователей для рассылки:")
+            info_lines.append(", ".join(f"<b>{status}</b>" for status in normal_statuses))
+
+        if keyword_statuses:
+            info_lines.append("Ключевые слова для рассылки:")
+            info_lines.append(", ".join(f"<b>{kw}</b>" for kw in keyword_statuses))
     else:
         info_lines.append("Статусы для рассылки не заданы.")
     final_text = "\n".join(info_lines)
     await callback.message.answer(final_text, parse_mode="HTML")
+
+    # Извлечение caption_entities аналогично send_once_broadcast
+    caption_entities_raw = mailing.caption_entities
+    entities = None
+    if caption_entities_raw:
+        try:
+            entities = [MessageEntity(**entity) for entity in json.loads(caption_entities_raw)]
+        except Exception as e:
+            logging.error(f"Ошибка парсинга caption_entities: {e}")
+            entities = None
+
+    # Обработка вложений
     try:
-        await callback.bot.copy_message(
-            chat_id=callback.message.chat.id,
-            from_chat_id=mailing.saved_chat_id,
-            message_id=mailing.saved_message_id
-        )
+        attachments = json.loads(mailing.file_ids)
+        if attachments:
+            input_media = []
+            for idx, att in enumerate(attachments):
+                if att["type"] == "photo":
+                    media_obj = InputMediaPhoto(
+                        media=att["file_id"],
+                        caption=mailing.caption if (idx == 0 and mailing.caption) else None,
+                        caption_entities=entities if (idx == 0 and mailing.caption) else None,
+                        parse_mode=None,
+                    )
+                elif att["type"] == "document":
+                    media_obj = InputMediaDocument(
+                        media=att["file_id"],
+                        caption=mailing.caption if (idx == 0 and mailing.caption) else None,
+                        caption_entities=entities if (idx == 0 and mailing.caption) else None,
+                        parse_mode=None,
+                    )
+                elif att["type"] == "video":
+                    media_obj = InputMediaVideo(
+                        media=att["file_id"],
+                        caption=mailing.caption if (idx == 0 and mailing.caption) else None,
+                        caption_entities=entities if (idx == 0 and mailing.caption) else None,
+                        parse_mode=None,
+                    )
+                input_media.append(media_obj)
+            await callback.bot.send_media_group(
+                chat_id=callback.message.chat.id, media=input_media
+            )
+        else:
+            await callback.bot.send_message(
+                chat_id=callback.message.chat.id,
+                text=mailing.caption,
+                entities=entities,
+                parse_mode=None
+            )
     except Exception as e:
-        logging.warning(f"Не удалось скопировать сообщение: {e}")
+        logging.warning(f"Не удалось отправить сообщение: {e}")
         await callback.message.answer("Не удалось скопировать исходное сообщение.")
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Изменить сообщение", callback_data="edit_mailing_message")],
         [InlineKeyboardButton(text="Изменить расписание", callback_data="edit_mailing_schedule")],
@@ -534,7 +748,6 @@ async def existing_mailing_selected(callback: types.CallbackQuery, state: FSMCon
     ])
     await callback.message.answer("Управление рассылкой:", reply_markup=kb)
     await state.set_state(BroadcastStates.EXISTING_MAILING_MANAGE)
-
 
 # -----------------------------
 #  Меню управления существующей рассылкой
@@ -577,24 +790,113 @@ async def manage_existing_mailing(callback: types.CallbackQuery, state: FSMConte
     else:
         await callback.answer("Неизвестная команда")
 
+async def process_media_group_broadcast_edit(media_group_id: str, state: FSMContext, trigger_message: types.Message):
+    """
+    Ждёт 1 секунду для накопления всех сообщений из media‑группы,
+    агрегирует вложения и обновляет запись рассылки (editing).
+    """
+    await bot.send_chat_action(trigger_message.chat.id, "typing")
+    await asyncio.sleep(1)  # Ждём, чтобы собрать все сообщения группы
+    data = await state.get_data()
+    media_group = data.get("media_group", [])
+    if media_group:
+        file_list = []
+        caption = ""
+        caption_entities = None
+        # Извлекаем caption из первого сообщения с текстом
+        for mg in media_group:
+            if mg.caption or mg.text:
+                caption = mg.caption or mg.text
+                if mg.caption_entities:
+                    caption_entities = [entity.dict() for entity in mg.caption_entities]
+                break
+        # Собираем вложения из всех сообщений группы
+        for msg in media_group:
+            if msg.photo:
+                file_list.append({"type": "photo", "file_id": msg.photo[-1].file_id})
+            elif msg.document:
+                file_list.append({"type": "document", "file_id": msg.document.file_id})
+            elif msg.video:
+                file_list.append({"type": "video", "file_id": msg.video.file_id})
+        chat_id = media_group[0].chat.id
+        message_ids = [msg.message_id for msg in media_group]
+        # Обновляем state новыми данными
+        await state.update_data(
+            saved_chat_id=str(chat_id),
+            saved_message_id=",".join(str(mid) for mid in message_ids),
+            file_ids=json.dumps(file_list),
+            caption=caption,
+            caption_entities=json.dumps(caption_entities) if caption_entities else None
+        )
+        # Обновляем запись рассылки в БД
+        data = await state.get_data()
+        mailing_id = data.get("existing_mailing_id")
+        async with AsyncSessionLocal() as session:
+            mailing = await session.get(Mailing, mailing_id)
+            if mailing and mailing.active == 1:
+                mailing.saved_chat_id = str(chat_id)
+                mailing.saved_message_id = ",".join(str(mid) for mid in message_ids)
+                mailing.file_ids = json.dumps(file_list)
+                mailing.caption = caption
+                mailing.caption_entities = json.dumps(caption_entities) if caption_entities else None
+                await session.commit()
+        await trigger_message.answer("Сообщение для рассылки обновлено.")
+        # Очищаем временные данные по media‑группе и завершаем редактирование
+        await state.update_data(media_group=[])
+        await state.clear()
+
 
 # -----------------------------
 #  Редактирование сообщения существующей рассылки
 # -----------------------------
 @broadcast_router.message(BroadcastStates.EDITING_EXISTING_MESSAGE)
 async def editing_existing_message(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    mailing_id = data.get("existing_mailing_id")
-    new_chat_id = str(message.chat.id)
-    new_msg_id = str(message.message_id)
-    async with AsyncSessionLocal() as session:
-        mailing = await session.get(Mailing, mailing_id)
-        if mailing and mailing.active == 1:
-            mailing.saved_chat_id = new_chat_id
-            mailing.saved_message_id = new_msg_id
-            await session.commit()
-    await message.answer("Сообщение для рассылки обновлено.")
-    await state.clear()
+    """
+    Обрабатывает новое сообщение для редактирования рассылки.
+    Если сообщение принадлежит media‑группе, накапливает его и вызывает обработку группы.
+    В противном случае сразу обновляет запись с данными (saved_chat_id, saved_message_id, file_ids, caption, caption_entities).
+    """
+    await bot.send_chat_action(message.chat.id, "typing")
+    if message.media_group_id:
+        data = await state.get_data()
+        media_group = data.get("media_group", [])
+        media_group.append(message)
+        await state.update_data(media_group=media_group)
+        if len(media_group) == 1:
+            # Запускаем задачу для обработки всей группы
+            asyncio.create_task(process_media_group_broadcast_edit(message.media_group_id, state, message))
+        return
+    else:
+        file_list = []
+        caption = message.caption or message.text or ""
+        if message.caption_entities:
+            caption_entities = [entity.dict() for entity in message.caption_entities]
+        elif message.entities:
+            caption_entities = [entity.dict() for entity in message.entities]
+        else:
+            caption_entities = None
+        if message.photo:
+            file_list.append({"type": "photo", "file_id": message.photo[-1].file_id})
+        elif message.document:
+            file_list.append({"type": "document", "file_id": message.document.file_id})
+        elif message.video:
+            file_list.append({"type": "video", "file_id": message.video.file_id})
+        async with AsyncSessionLocal() as session:
+            data = await state.get_data()
+            mailing_id = data.get("existing_mailing_id")
+            new_chat_id = str(message.chat.id)
+            new_msg_id = str(message.message_id)
+            mailing = await session.get(Mailing, mailing_id)
+            if mailing and mailing.active == 1:
+                mailing.saved_chat_id = new_chat_id
+                mailing.saved_message_id = new_msg_id
+                mailing.file_ids = json.dumps(file_list)
+                mailing.caption = caption
+                mailing.caption_entities = json.dumps(caption_entities) if caption_entities else None
+                await session.commit()
+        await message.answer("Сообщение для рассылки обновлено.")
+        await state.clear()
+
 
 
 # -----------------------------
@@ -682,15 +984,59 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
     bot = callback.bot
     success_count = 0
     error_count = 0
-    for user in users_list:
-        if not user.tg_id:
-            continue
+
+    # Готовим данные рассылки
+    mailing_file_ids = mailing.file_ids
+    mailing_caption = mailing.caption
+    mailing_caption_entities = mailing.caption_entities
+    mailing_saved_chat_id = mailing.saved_chat_id
+    mailing_saved_message_id = mailing.saved_message_id
+
+    # Если указаны caption_entities, пытаемся их распарсить
+    entities = None
+    if mailing_caption_entities:
         try:
-            await bot.copy_message(
-                chat_id=user.tg_id,
-                from_chat_id=mailing.saved_chat_id,
-                message_id=mailing.saved_message_id
-            )
+            entities = [MessageEntity(**entity) for entity in json.loads(mailing_caption_entities)]
+        except Exception as e:
+            logging.error(f"Ошибка парсинга caption_entities: {e}")
+            entities = None
+    tg_ids = set([user.tg_id for user in users_list if user.tg_id])
+    for tg_id in tg_ids:
+        try:
+            attachments = json.loads(mailing_file_ids)
+            if len(attachments) > 0:
+                media_group = []
+                for idx, att in enumerate(attachments):
+                    if att["type"] == "photo":
+                        media_obj = InputMediaPhoto(
+                            media=att["file_id"],
+                            caption=mailing_caption if (idx == 0 and mailing_caption) else None,
+                            caption_entities=entities if (idx == 0 and mailing_caption) else None,
+                            parse_mode=None,
+                        )
+                    elif att["type"] == "document":
+                        media_obj = InputMediaDocument(
+                            media=att["file_id"],
+                            caption=mailing_caption if (idx == 0 and mailing_caption) else None,
+                            caption_entities=entities if (idx == 0 and mailing_caption) else None,
+                            parse_mode=None,
+                        )
+                    elif att["type"] == "video":
+                        media_obj = InputMediaVideo(
+                            media=att["file_id"],
+                            caption=mailing_caption if (idx == 0 and mailing_caption) else None,
+                            caption_entities=entities if (idx == 0 and mailing_caption) else None,
+                            parse_mode=None,
+                        )
+                    media_group.append(media_obj)
+                await bot.send_media_group(chat_id=tg_id, media=media_group)
+            else:
+                await callback.bot.send_message(
+                    chat_id=tg_id,
+                    text=mailing.caption,
+                    entities=entities,
+                    parse_mode=None
+                )
             success_count += 1
         except Exception as e:
             logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
@@ -698,7 +1044,6 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
     logging.info(f"Единоразовая рассылка для mailing_id={mailing_id} завершена: успешно={success_count}, ошибок={error_count}.")
     text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
     await callback.message.edit_text(text)
-
 
 # -----------------------------
 # Универсальные функции: построение клавиатур
