@@ -245,7 +245,7 @@ async def cmd_user_info(message: types.Message):
             reply_text += f"Дата регистрации: <b>{user_info['created_at'].strftime('%d.%m.%Y %H:%M')}</b>\n"
         reply_text += (
             f"Имя: <b><a href='tg://user?id={user_info['tg_id']}'>{user_info['first_name']}</a></b>\n"
-            f"Статус: <b>{user_info['status']}</b>\n"
+            f"Статус: <b>{user_info['status'] if user_info['status'] is not None else 'не зарегистрирован'}</b>\n"
             f"Просмотренные материалы:\n"
         )
         for material in info["viewed_materials"]:
