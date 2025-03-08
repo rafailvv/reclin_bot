@@ -28,7 +28,7 @@ async def cmd_stats(message: types.Message):
         # Агрегируем категории, приводим к нижнему регистру и заменяем None на "не зарегистрированы"
         aggregated_categories = {}
         for cat, cnt in stats["category_data"]:
-            key = "не зарегистрированы" if cat is None else cat.lower()
+            key = "не зарегистрирован" if cat is None else cat.lower()
             aggregated_categories[key] = aggregated_categories.get(key, 0) + cnt
 
         reply_text = (
