@@ -218,7 +218,7 @@ async def get_user_info(session, query):
     user_stmt = None
 
     if query.isdigit():  # Если введено число, ищем по Telegram ID
-        user_stmt = select(User).where(User.tg_id == int(query))
+        user_stmt = select(User).where(User.tg_id == query)
     elif query.startswith("@"):  # Если начинается с @, ищем по username
         user_stmt = select(User).where(User.username_in_tg.ilike(query[1:]))
     else:  # Ищем по first_name (некоторые пользователи могут быть без username)
