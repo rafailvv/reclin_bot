@@ -547,7 +547,7 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
                 )
             success_count += 1
         except Exception as e:
-            logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
+            logging.warning(f"Не удалось отправить сообщение пользователю {tg_id}: {e}")
             error_count += 1
 
     final_text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
@@ -1039,7 +1039,7 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
                 )
             success_count += 1
         except Exception as e:
-            logging.warning(f"Не удалось отправить сообщение пользователю {user.tg_id}: {e}")
+            logging.warning(f"Не удалось отправить сообщение пользователю {tg_id}: {e}")
             error_count += 1
     logging.info(f"Единоразовая рассылка для mailing_id={mailing_id} завершена: успешно={success_count}, ошибок={error_count}.")
     text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
