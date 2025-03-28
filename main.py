@@ -19,7 +19,11 @@ from app.utils.excel_loader import load_initial_data_from_excel
 from app.middlewares.logging_lastvisit import LoggingAndLastVisitMiddleware
 from app.utils.helpers import bot
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 async def main():
     # Шаг 1: создаём таблицы (если не существуют)
