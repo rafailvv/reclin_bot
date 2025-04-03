@@ -36,7 +36,7 @@ async def cmd_stats(message: types.Message):
             f"Активных: {stats['active_users']}\n"
             "Пользователи по категориям:\n"
         )
-        for cat, cnt in aggregated_categories.items():
+        for cat, cnt in sorted(aggregated_categories.items()):
             reply_text += f"  - {cat}: {cnt}\n"
 
         await message.answer(reply_text)

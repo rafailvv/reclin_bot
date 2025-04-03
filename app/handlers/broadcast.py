@@ -550,6 +550,7 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
             logging.warning(f"Не удалось отправить сообщение пользователю {tg_id}: {e}")
             error_count += 1
 
+    logging.info(f"Единоразовая рассылка завершена: успешно={success_count}, ошибок={error_count}.")
     final_text = f"Единоразовая рассылка завершена.\nУспешно: {success_count}, Ошибок: {error_count}"
     if isinstance(callback_or_message, types.CallbackQuery):
         await callback_or_message.message.edit_text(final_text)

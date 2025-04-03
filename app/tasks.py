@@ -223,6 +223,8 @@ async def update_database(bot):
                     first_name = user_data.get("name_user")
                     last_name = user_data.get("surname_user")
                     status = user_data.get("last_tarif_status")
+                    if status == "Подписка активна":
+                        status = user_data.get("last_Tarif_name")
                     created_at = datetime.strptime(user_data.get("registration_date"), "%Y-%m-%d %H:%M:%S")
 
                     # Ищем пользователя в базе данных
