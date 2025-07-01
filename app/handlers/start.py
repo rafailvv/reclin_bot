@@ -240,3 +240,14 @@ async def receive_idea(message: types.Message, bot: Bot, state: FSMContext):
             )
     await message.answer("Спасибо за Ваше обращение!")
     await state.clear()
+
+@start_router.message()
+async def forward_all_messages(message: types.Message, bot: Bot):
+    if message.from_user.is_bot:
+        return
+    for admin_id in config.ADMIN_IDS:
+        await bot.forward_message(
+            chat_id=admin_id,
+            from_chat_id=message.chat.id,
+            message_id=message.message_id
+        )
