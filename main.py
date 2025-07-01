@@ -44,11 +44,11 @@ async def main():
     dp.update.middleware(LoggingAndLastVisitMiddleware())
 
     # Подключаем роутеры
-    dp.include_router(start_router)
     dp.include_router(broadcast_router)
     dp.include_router(keyword_router)
     dp.include_router(stats_router)
     dp.include_router(callback_router)
+    dp.include_router(start_router)
 
     # Регистрируем запуск фоновой задачи в on_startup
     asyncio.create_task(mailing_scheduler(bot))
