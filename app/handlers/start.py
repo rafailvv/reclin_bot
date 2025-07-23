@@ -4,10 +4,12 @@ import json
 import logging
 from datetime import datetime
 from aiogram import Router, types, Bot
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaDocument, InputMediaVideo, MessageEntity
+from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaDocument, InputMediaVideo, MessageEntity, \
+    InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -19,6 +21,11 @@ from app.utils.helpers import get_or_create_user, bot
 
 start_router = Router()
 
+
+def get_reply_button(user_id: int, message_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Ответить", callback_data=f"reply:{user_id}:{message_id}")
+    return builder.as_markup()
 
 @start_router.message(CommandStart())
 async def cmd_start(message: types.Message, bot: Bot, state: FSMContext):
@@ -211,11 +218,13 @@ async def receive_recommendation(message: types.Message, bot: Bot, state: FSMCon
     for admin_id in config.ADMIN_IDS:
         if message.from_user.username is not None:
             await bot.send_message(admin_id,
-                f"Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a> (@{message.from_user.username}) отправил рекомендацию:\n\n{message.text}"
+                f"📌<b>Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a></b> (@{message.from_user.username}) отправил рекомендацию:\n\n{message.text}",
+                reply_markup=get_reply_button(user_id= message.from_user.id, message_id=message.message_id)
             )
         else:
             await bot.send_message(admin_id,
-                f"Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a> отправил рекомендацию:\n\n{message.text}"
+                f"📌<b>Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a></b> отправил рекомендацию:\n\n{message.text}",
+                reply_markup=get_reply_button(user_id= message.from_user.id, message_id=message.message_id)
             )
     await message.answer("Спасибо за Ваше обращение!")
     await state.clear()
@@ -232,22 +241,43 @@ async def receive_idea(message: types.Message, bot: Bot, state: FSMContext):
     for admin_id in config.ADMIN_IDS:
         if message.from_user.username is not None:
             await bot.send_message(admin_id,
-                f"Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a> (@{message.from_user.username}) отправил сообщение:\n\n{message.text}"
+                f"💡<b>Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a> (@{message.from_user.username})</b> отправил идею или замечание:\n\n{message.text}",
+                reply_markup=get_reply_button(user_id= message.from_user.id, message_id=message.message_id)
             )
         else:
             await bot.send_message(admin_id,
-                f"Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a> отправил сообщение:\n\n{message.text}"
+                f"💡<b>Пользователь <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a></b> отправил идею или замечение:\n\n{message.text}",
+                reply_markup=get_reply_button(user_id= message.from_user.id, message_id=message.message_id)
             )
     await message.answer("Спасибо за Ваше обращение!")
     await state.clear()
 
-@start_router.message()
-async def forward_all_messages(message: types.Message, bot: Bot):
+@start_router.message(StateFilter(None))  # Только если FSM неактивен
+async def forward_all_messages(message: types.Message, bot: Bot, state: FSMContext):
     if message.from_user.is_bot:
         return
+
+    if message.text and message.text.startswith("/"):  # Игнорировать команды
+        return
+
+    if message.chat.id in config.ADMIN_IDS:
+        return
+
+    full_name = message.from_user.full_name
+    user_id = message.from_user.id
+    username = message.from_user.username
+
     for admin_id in config.ADMIN_IDS:
-        await bot.forward_message(
+        if username:
+            from_block = f"<b>📩 Сообщение от</b> <a href='tg://user?id={user_id}'>{full_name}</a> (@{username}):\n\n"
+        else:
+            from_block = f"<b>📩 Сообщение от</b> <a href='tg://user?id={user_id}'>{full_name}</a>:\n\n"
+
+        text = from_block + message.text
+
+        await bot.send_message(
             chat_id=admin_id,
-            from_chat_id=message.chat.id,
-            message_id=message.message_id
+            text=text,
+            parse_mode="HTML",
+            reply_markup=get_reply_button(user_id=user_id, message_id=message.message_id)
         )
