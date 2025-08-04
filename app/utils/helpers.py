@@ -1,3 +1,4 @@
+import logging
 import secrets
 import csv
 from datetime import datetime, timedelta
@@ -78,17 +79,47 @@ async def generate_link_for_material(session, material, keyword, expire_in_days,
 
 
 async def get_user_statistics(session):
+    """
+    Получает статистику пользователей с новой сегментацией:
+    - Активные пользователи: статус начинается на "подписка на"
+    - Неактивные пользователи: статус "зарегистрирован" или "подписка закончилась"
+    - Пользователи по лид-магниту: статус "не зарегистрирован" или None
+    """
     total_users = await session.scalar(select(func.count(User.id)))
+    
+    # Активные пользователи - статус начинается на "подписка на"
     active_users = await session.scalar(
-        select(func.count(User.id)).where(User.status != "неактивен")
+        select(func.count(User.id))
+        .where(func.lower(User.status).like("подписка на%"))
     )
-    # Группировка по категориям
+    logging.info(active_users)
+    
+    # Неактивные пользователи - статус "зарегистрирован" или "подписка закончилась"
+    inactive_users = await session.scalar(
+        select(func.count(User.id))
+        .where(func.lower(User.status).in_(["зарегистрирован", "подписка закончилась"]))
+    )
+    
+    # Пользователи по лид-магниту - статус "не зарегистрирован" или None
+    lead_magnet_users = await session.scalar(
+        select(func.count(User.id))
+        .where(
+            (func.lower(User.status) == "не зарегистрирован") | 
+            (User.status.is_(None)) |
+            (User.status == "—")
+        )
+    )
+    
+    # Детальная статистика по статусам
     cat_stmt = select(User.status, func.count(User.id)).group_by(User.status)
     result = await session.execute(cat_stmt)
     category_data = result.all()
+    
     return {
         "total_users": total_users,
         "active_users": active_users,
+        "inactive_users": inactive_users,
+        "lead_magnet_users": lead_magnet_users,
         "category_data": category_data
     }
 
@@ -135,12 +166,23 @@ async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
         last_visit_result = await session.execute(last_visit_stmt)
         last_visit = last_visit_result.scalar_one_or_none()
 
+        # Определяем сегмент пользователя
+        if user.status and user.status.lower().startswith("подписка на"):
+            segment = "Активные пользователи"
+        elif user.status and user.status.lower() in ["зарегистрирован", "подписка закончилась"]:
+            segment = "Неактивные пользователи"
+        elif user.status and user.status.lower() == "не зарегистрирован" or user.status in [None, "—"]:
+            segment = "Пользователи по лид-магниту"
+        else:
+            segment = "Неопределенный сегмент"
+        
         data.append({
             "TG ID": user.tg_id,
             "WP ID": user.wp_id or "—",
             "Username": f"@{user.username_in_tg}" if user.username_in_tg else "—",
             "Имя": user.first_name or "—",
             "Статус": (user.status or "—").lower(),
+            "Сегмент": segment,
             "Дата регистрации": user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else "—",
             "Последняя активность": user.last_interaction.strftime('%d.%m.%Y %H:%M') if user.last_interaction else "—",
             "Дата последнего посещения": last_visit.strftime('%d.%m.%Y %H:%M') if last_visit else "—",
@@ -271,6 +313,9 @@ async def get_day_of_week_names(number):
     """
     days_of_week = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     return days_of_week[number-1] if 1 <= number < 8 else None
+
+
+
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 

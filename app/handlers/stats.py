@@ -9,9 +9,10 @@ from aiogram.types import MessageEntity, InputMediaPhoto, InputMediaDocument, In
 from sqlalchemy import select, delete
 from sqlalchemy.orm import joinedload
 
+
 from app.config import config
 from app.db.db import AsyncSessionLocal
-from app.db.models import KeywordLink, Material, MaterialView
+from app.db.models import KeywordLink, Material, MaterialView, User
 from app.utils.helpers import get_user_statistics, get_keyword_info, get_user_info, export_statistics_to_excel
 
 stats_router = Router()
@@ -19,27 +20,21 @@ stats_router = Router()
 @stats_router.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     """
-    Показать статистику
+    Показать статистику с новой сегментацией пользователей
     """
     if message.chat.id not in config.ADMIN_IDS:
         return
     async with AsyncSessionLocal() as session:
         stats = await get_user_statistics(session)
-        # Агрегируем категории, приводим к нижнему регистру и заменяем None на "не зарегистрированы"
-        aggregated_categories = {}
-        for cat, cnt in stats["category_data"]:
-            key = "не зарегистрирован" if cat is None else cat.lower()
-            aggregated_categories[key] = aggregated_categories.get(key, 0) + cnt
-
+        
         reply_text = (
-            f"Общее количество пользователей: {stats['total_users']}\n"
-            f"Активных: {stats['active_users']}\n"
-            "Пользователи по категориям:\n"
+            f"Общее количество: *{stats['total_users']}*\n\n"
+            f"*Активные пользователи* (активная подписка): *{stats['active_users']}*\n"
+            f"*Неактивные пользователи* (завершенная подписка/без покупки): *{stats['inactive_users']}*\n"
+            f"*Пользователи по лид-магниту* (только контакт): *{stats['lead_magnet_users']}*"
         )
-        for cat, cnt in sorted(aggregated_categories.items()):
-            reply_text += f"  - {cat}: {cnt}\n"
 
-        await message.answer(reply_text)
+        await message.answer(reply_text, parse_mode="Markdown")
 
 @stats_router.message(Command("export_stats"))
 async def cmd_export_stats(message: types.Message):
@@ -267,7 +262,7 @@ async def cmd_info(message: types.Message):
         "🤖 *Доступные команды:*\n\n"
         "📢 */broadcast* — управление рассылками (создание, редактирование, удаление)\n"
         "🔗 */keyword <ключевое слово>* – генерация ссылки по ключевому слову\n"
-        "📊 */stats* — статистика пользователей и активности\n"
+        "📊 */stats* — статистика пользователей с сегментацией\n"
         "📂 */export_stats* — экспорт статистики пользователей в Excel\n"
         "🔑 */keyword_info <ключевое слово>* — информация по ключевому слову\n"
         "👤 */user_info <ID | @username | имя>* — информация о пользователе\n"
@@ -275,3 +270,5 @@ async def cmd_info(message: types.Message):
         "⚡ Используйте команды для управления ботом!"
     )
     await message.answer(info_text, parse_mode="Markdown")
+
+
