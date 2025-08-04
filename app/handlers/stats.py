@@ -56,6 +56,43 @@ async def cmd_export_stats(message: types.Message):
     if os.path.exists(file_path):
         os.remove(file_path)
 
+@stats_router.message(Command("backup"))
+async def cmd_backup(message: types.Message):
+    """
+    Создать и отправить бэкап базы данных
+    """
+    if message.chat.id not in config.ADMIN_IDS:
+        return
+    
+    status_message = await message.answer("⏳ Создаем бэкап базы данных...")
+    
+    try:
+        from app.tasks import create_database_backup
+        from datetime import datetime
+        import os
+        
+        # Создаем бэкап
+        backup_path = await create_database_backup()
+        
+        if backup_path and os.path.exists(backup_path):
+            # Отправляем бэкап
+            with open(backup_path, 'rb') as backup_file:
+                await message.answer_document(
+                    document=types.FSInputFile(backup_path),
+                    caption=f"📦 Бэкап базы данных\n📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n💾 Размер: {os.path.getsize(backup_path) / 1024:.1f} KB"
+                )
+            
+            # Удаляем временный файл
+            os.remove(backup_path)
+            await status_message.edit_text("✅ Бэкап создан и отправлен успешно!")
+        else:
+            await status_message.edit_text("❌ Ошибка создания бэкапа")
+            
+    except Exception as e:
+        await status_message.edit_text(f"❌ Ошибка при создании бэкапа: {str(e)}")
+        logging.error(f"Ошибка при создании бэкапа: {e}")
+
+
 async def send_keyword_info(chat_id: int, keyword: str, bot: Bot):
     """
     Получает материал и информацию по ключевому слову, отправляет медиа (если есть) и текст с данными.

@@ -5,9 +5,10 @@ FROM python:3.10-slim
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
-# Устанавливаем необходимые системные пакеты (если нужны)
+# Устанавливаем необходимые системные пакеты
 RUN apt-get update && apt-get install -y \
     build-essential \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем список зависимостей

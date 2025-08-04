@@ -14,7 +14,7 @@ from app.handlers.start import start_router
 from app.handlers.broadcast import broadcast_router
 from app.handlers.keyword import keyword_router
 from app.handlers.stats import stats_router
-from app.tasks import mailing_scheduler, update_database
+from app.tasks import mailing_scheduler, update_database, backup_scheduler
 
 from app.utils.excel_loader import load_initial_data_from_excel
 from app.middlewares.logging_lastvisit import LoggingAndLastVisitMiddleware
@@ -55,6 +55,7 @@ async def main():
     # Регистрируем запуск фоновой задачи в on_startup
     asyncio.create_task(mailing_scheduler(bot))
     asyncio.create_task(update_database(bot))
+    asyncio.create_task(backup_scheduler(bot))
 
     logging.info("Starting bot polling...")
     await dp.start_polling(bot)

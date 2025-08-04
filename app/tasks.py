@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import json
+import subprocess
+import os
 from datetime import datetime, timedelta
 from calendar import monthrange
 
@@ -13,6 +15,95 @@ from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
 from app.config import config
 from aiogram.types import MessageEntity, InputMediaPhoto, InputMediaDocument, InputMediaVideo
+from aiogram import Bot
+
+
+async def create_database_backup():
+    """
+    Создает бэкап базы данных PostgreSQL
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        backup_filename = f"backup_{timestamp}.sql"
+        backup_path = f"/tmp/{backup_filename}"
+        
+        # Команда для создания бэкапа
+        cmd = [
+            "pg_dump",
+            "-h", config.DB_HOST,
+            "-p", config.DB_PORT,
+            "-U", config.DB_USER,
+            "-d", config.DB_NAME,
+            "-f", backup_path
+        ]
+        
+        # Устанавливаем переменную окружения для пароля
+        env = os.environ.copy()
+        env["PGPASSWORD"] = config.DB_PASSWORD
+        
+        # Выполняем команду
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logging.info(f"✅ Бэкап создан успешно: {backup_filename}")
+            return backup_path
+        else:
+            logging.error(f"❌ Ошибка создания бэкапа: {result.stderr}")
+            return None
+            
+    except Exception as e:
+        logging.error(f"❌ Ошибка при создании бэкапа: {e}")
+        return None
+
+
+async def backup_scheduler(bot: Bot):
+    """
+    Планировщик бэкапов - создает и отправляет бэкап базы данных каждую ночь в 01:00
+    """
+    logging.info("🔄 Планировщик бэкапов запущен")
+    
+    while True:
+        now = datetime.now()
+        
+        # Проверяем, наступило ли время для бэкапа (01:00)
+        if now.hour == 1 and now.minute == 0:
+            logging.info("🕐 Время создания бэкапа!")
+            
+            try:
+                # Создаем бэкап
+                backup_path = await create_database_backup()
+                
+                if backup_path and os.path.exists(backup_path):
+                    # Отправляем бэкап в Telegram
+                    with open(backup_path, 'rb') as backup_file:
+                        await bot.send_document(
+                            chat_id=429272623,
+                            document=backup_file,
+                            caption=f"📦 Бэкап базы данных\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}\n💾 Размер: {os.path.getsize(backup_path) / 1024:.1f} KB"
+                        )
+                    
+                    # Удаляем временный файл
+                    os.remove(backup_path)
+                    logging.info("✅ Бэкап отправлен и файл удален")
+                else:
+                    await bot.send_message(
+                        chat_id=429272623,
+                        text=f"❌ Ошибка создания бэкапа\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}"
+                    )
+                    logging.error("❌ Не удалось создать бэкап")
+                    
+            except Exception as e:
+                logging.error(f"❌ Ошибка в планировщике бэкапов: {e}")
+                try:
+                    await bot.send_message(
+                        chat_id=429272623,
+                        text=f"❌ Ошибка в планировщике бэкапов\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}\n🔍 Ошибка: {str(e)}"
+                    )
+                except:
+                    pass
+        
+        # Ждем 1 минуту перед следующей проверкой
+        await asyncio.sleep(60)
 
 
 async def mailing_scheduler(bot):
