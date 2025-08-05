@@ -30,7 +30,8 @@ async def cmd_stats(message: types.Message):
         reply_text = (
             f"Общее количество: *{stats['total_users']}*\n\n"
             f"*Активные пользователи* (активная подписка): *{stats['active_users']}*\n"
-            f"*Неактивные пользователи* (завершенная подписка/без покупки): *{stats['inactive_users']}*\n"
+            f"*Зарегистрированные* (без подписки): *{stats['registered_users']}*\n"
+            f"*Подписка закончилась* (завершенная подписка): *{stats['expired_users']}*\n"
             f"*Пользователи по лид-магниту* (только контакт): *{stats['lead_magnet_users']}*"
         )
 

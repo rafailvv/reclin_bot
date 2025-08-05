@@ -82,7 +82,8 @@ async def get_user_statistics(session):
     """
     Получает статистику пользователей с новой сегментацией:
     - Активные пользователи: статус начинается на "подписка на"
-    - Неактивные пользователи: статус "зарегистрирован" или "подписка закончилась"
+    - Зарегистрированные: статус "зарегистрирован"
+    - Подписка закончилась: статус "подписка закончилась"
     - Пользователи по лид-магниту: статус "не зарегистрирован" или None
     """
     total_users = await session.scalar(select(func.count(User.id)))
@@ -94,10 +95,16 @@ async def get_user_statistics(session):
     )
     logging.info(active_users)
     
-    # Неактивные пользователи - статус "зарегистрирован" или "подписка закончилась"
-    inactive_users = await session.scalar(
+    # Зарегистрированные пользователи - статус "зарегистрирован"
+    registered_users = await session.scalar(
         select(func.count(User.id))
-        .where(func.lower(User.status).in_(["зарегистрирован", "подписка закончилась"]))
+        .where(func.lower(User.status) == "зарегистрирован")
+    )
+    
+    # Пользователи с закончившейся подпиской - статус "подписка закончилась"
+    expired_users = await session.scalar(
+        select(func.count(User.id))
+        .where(func.lower(User.status) == "подписка закончилась")
     )
     
     # Пользователи по лид-магниту - статус "не зарегистрирован" или None
@@ -118,7 +125,8 @@ async def get_user_statistics(session):
     return {
         "total_users": total_users,
         "active_users": active_users,
-        "inactive_users": inactive_users,
+        "registered_users": registered_users,
+        "expired_users": expired_users,
         "lead_magnet_users": lead_magnet_users,
         "category_data": category_data
     }
@@ -169,8 +177,10 @@ async def export_statistics_to_excel(session, file_path: str = "stats.xlsx"):
         # Определяем сегмент пользователя
         if user.status and user.status.lower().startswith("подписка на"):
             segment = "Активные пользователи"
-        elif user.status and user.status.lower() in ["зарегистрирован", "подписка закончилась"]:
-            segment = "Неактивные пользователи"
+        elif user.status and user.status.lower() == "зарегистрирован":
+            segment = "Зарегистрированные"
+        elif user.status and user.status.lower() == "подписка закончилась":
+            segment = "Подписка закончилась"
         elif user.status and user.status.lower() == "не зарегистрирован" or user.status in [None, "—"]:
             segment = "Пользователи по лид-магниту"
         else:
