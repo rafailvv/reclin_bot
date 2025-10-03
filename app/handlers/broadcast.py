@@ -154,16 +154,17 @@ async def choose_target_type(callback: types.CallbackQuery, state: FSMContext):
         await state.set_state(BroadcastStates.CHOOSING_STATUSES)
         await callback.answer()
     elif callback.data == "target_keywords":
-        # Получаем ключевые слова из таблицы Material
+        # Получаем ключевые слова из таблицы Material и сортируем по алфавиту
         async with AsyncSessionLocal() as session:
             result = await session.scalars(select(Material.keyword))
             all_keywords = sorted({kw for kw in result.all() if kw})
         await state.update_data(
             all_keywords=all_keywords,
             selected_keywords={kw: False for kw in all_keywords},
-            target_type="keywords"
+            target_type="keywords",
+            keywords_page=0  # Начинаем с первой страницы
         )
-        kb = build_keywords_keyboard(all_keywords, {kw: False for kw in all_keywords})
+        kb = build_keywords_keyboard(all_keywords, {kw: False for kw in all_keywords}, page=0)
         await callback.message.edit_text("Выберите ключевые слова для рассылки.\nНажмите 'Далее', когда выбор завершён.", reply_markup=kb)
         await state.set_state(BroadcastStates.CHOOSING_KEYWORDS)
         await callback.answer()
@@ -184,16 +185,41 @@ def build_statuses_keyboard(all_statuses, selected_dict):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def build_keywords_keyboard(all_keywords, selected_dict):
+def build_keywords_keyboard(all_keywords, selected_dict, page=0, items_per_page=90):
     """
-    Строит клавиатуру для выбора ключевых слов.
+    Строит клавиатуру для выбора ключевых слов с пагинацией.
     """
     buttons = []
-    for kw in all_keywords:
+    
+    # Вычисляем границы для текущей страницы
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    page_keywords = all_keywords[start_idx:end_idx]
+    
+    # Добавляем кнопки для ключевых слов на текущей странице
+    for kw in page_keywords:
         checked = "✅" if selected_dict.get(kw, False) else ""
         btn_text = f"{checked}{kw}"
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"toggle_keyword_{kw}")])
+    
+    # Добавляем навигационные кнопки
+    navigation_buttons = []
+    total_pages = (len(all_keywords) + items_per_page - 1) // items_per_page
+    
+    # Показываем навигацию только если больше одной страницы
+    if total_pages > 1:
+        if page > 0:  # Есть предыдущая страница
+            navigation_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"keywords_page_{page-1}"))
+        
+        if page < total_pages - 1:  # Есть следующая страница
+            navigation_buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"keywords_page_{page+1}"))
+    
+    if navigation_buttons:
+        buttons.append(navigation_buttons)
+    
+    # Добавляем кнопку "Далее"
     buttons.append([InlineKeyboardButton(text="Далее", callback_data="keywords_done")])
+    
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -215,17 +241,32 @@ async def edit_statuses_message(callback: types.CallbackQuery, state: FSMContext
 @broadcast_router.callback_query(BroadcastStates.CHOOSING_KEYWORDS)
 async def handle_keywords_callback(callback: types.CallbackQuery, state: FSMContext):
     """
-    Обрабатывает выбор ключевых слов.
+    Обрабатывает выбор ключевых слов с поддержкой пагинации.
     """
     data = await state.get_data()
+    
     if callback.data.startswith("toggle_keyword_"):
         kw = callback.data.replace("toggle_keyword_", "")
         selected = data.get("selected_keywords", {})
         selected[kw] = not selected.get(kw, False)
         await state.update_data(selected_keywords=selected)
-        kb = build_keywords_keyboard(data.get("all_keywords", []), selected)
+        
+        # Обновляем клавиатуру с текущей страницей
+        current_page = data.get("keywords_page", 0)
+        kb = build_keywords_keyboard(data.get("all_keywords", []), selected, page=current_page)
         await callback.message.edit_text("Выберите ключевые слова для рассылки.\nНажмите 'Далее', когда выбор завершён.", reply_markup=kb)
         await callback.answer()
+        
+    elif callback.data.startswith("keywords_page_"):
+        # Обработка навигации по страницам
+        page = int(callback.data.replace("keywords_page_", ""))
+        await state.update_data(keywords_page=page)
+        
+        selected = data.get("selected_keywords", {})
+        kb = build_keywords_keyboard(data.get("all_keywords", []), selected, page=page)
+        await callback.message.edit_text("Выберите ключевые слова для рассылки.\nНажмите 'Далее', когда выбор завершён.", reply_markup=kb)
+        await callback.answer()
+        
     elif callback.data == "keywords_done":
         selected = await state.get_data()
         chosen = [kw for kw, val in selected.get("selected_keywords", {}).items() if val]
