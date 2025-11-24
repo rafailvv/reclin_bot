@@ -263,6 +263,10 @@ async def forward_all_messages(message: types.Message, bot: Bot, state: FSMConte
     if message.chat.id in config.ADMIN_IDS:
         return
 
+    # Проверяем, что сообщение содержит текст
+    if not message.text:
+        return
+
     full_name = message.from_user.full_name
     user_id = message.from_user.id
     username = message.from_user.username
