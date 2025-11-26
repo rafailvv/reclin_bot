@@ -15,7 +15,7 @@ from sqlalchemy import select, func
 from app.config import config
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
-from app.utils.helpers import get_day_of_week_names, bot
+from app.utils.helpers import get_day_of_week_names, get_users_by_ids_batched, bot
 
 broadcast_router = Router()
 
@@ -510,8 +510,7 @@ async def send_once_broadcast(state: FSMContext, callback_or_message: types.Mess
                 for mv in mviews:
                     all_user_ids.add(mv.user_id)
             if all_user_ids:
-                users = await session.scalars(select(User).where(User.id.in_(list(all_user_ids))))
-                users_list = users.all()
+                users_list = await get_users_by_ids_batched(session, all_user_ids)
             else:
                 users_list = []
     else:  # target_type == "statuses"
@@ -1006,8 +1005,7 @@ async def send_once_broadcast_existing(state: FSMContext, callback: types.Callba
                     for mv in mviews:
                         all_user_ids.add(mv.user_id)
             if all_user_ids:
-                users = await session.scalars(select(User).where(User.id.in_(list(all_user_ids))))
-                users_list = users.all()
+                users_list = await get_users_by_ids_batched(session, all_user_ids)
             else:
                 users_list = []
         else:

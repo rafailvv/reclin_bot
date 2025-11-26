@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
 from app.config import config
+from app.utils.helpers import get_users_by_ids_batched
 from aiogram.types import MessageEntity, InputMediaPhoto, InputMediaDocument, InputMediaVideo
 from aiogram import Bot
 
@@ -161,8 +162,7 @@ async def mailing_scheduler(bot):
                             mviews_list = mviews.all()
                             user_ids = [mv.user_id for mv in mviews_list]
                             if user_ids:
-                                users_result = await session.scalars(select(User).where(User.id.in_(user_ids)))
-                                users_list = users_result.all()
+                                users_list = await get_users_by_ids_batched(session, user_ids)
                             else:
                                 users_list = []
                         else:

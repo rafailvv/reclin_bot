@@ -325,6 +325,34 @@ async def get_day_of_week_names(number):
     return days_of_week[number-1] if 1 <= number < 8 else None
 
 
+async def get_users_by_ids_batched(session, user_ids, batch_size=20000):
+    """
+    Получает пользователей по списку ID, разбивая запрос на батчи для избежания 
+    превышения лимита параметров PostgreSQL (32767).
+    
+    Args:
+        session: SQLAlchemy async session
+        user_ids: список или set ID пользователей
+        batch_size: размер батча (по умолчанию 20000 для безопасности)
+    
+    Returns:
+        list: список объектов User
+    """
+    if not user_ids:
+        return []
+    
+    user_ids_list = list(user_ids)
+    all_users = []
+    
+    # Разбиваем на батчи
+    for i in range(0, len(user_ids_list), batch_size):
+        batch = user_ids_list[i:i + batch_size]
+        users_result = await session.scalars(select(User).where(User.id.in_(batch)))
+        all_users.extend(users_result.all())
+    
+    return all_users
+
+
 
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
