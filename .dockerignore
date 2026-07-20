@@ -1,0 +1,6 @@
+.git
+.env
+__pycache__
+*.py[cod]
+backup_*.sql
+backup_*.dump

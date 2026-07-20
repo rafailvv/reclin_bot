@@ -15,7 +15,7 @@ from app.db.db import AsyncSessionLocal
 from app.db.models import User, Mailing, MailingStatus, MailingSchedule, Material, MaterialView
 from app.config import config
 from app.utils.helpers import get_users_by_ids_batched
-from aiogram.types import MessageEntity, InputMediaPhoto, InputMediaDocument, InputMediaVideo
+from aiogram.types import FSInputFile, MessageEntity, InputMediaPhoto, InputMediaDocument, InputMediaVideo
 from aiogram import Bot
 
 
@@ -24,8 +24,8 @@ async def create_database_backup():
     Создает бэкап базы данных PostgreSQL
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        backup_filename = f"backup_{timestamp}.sql"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_filename = f"backup_{timestamp}.dump"
         backup_path = f"/tmp/{backup_filename}"
         
         # Команда для создания бэкапа
@@ -35,6 +35,7 @@ async def create_database_backup():
             "-p", config.DB_PORT,
             "-U", config.DB_USER,
             "-d", config.DB_NAME,
+            "--format=custom",
             "-f", backup_path
         ]
         
@@ -57,6 +58,58 @@ async def create_database_backup():
         return None
 
 
+async def create_and_send_database_backup(bot: Bot) -> bool:
+    """Создает, отправляет и затем удаляет временный архив базы данных."""
+    backup_path = await create_database_backup()
+    now = datetime.now()
+
+    if not backup_path or not os.path.exists(backup_path):
+        await bot.send_message(
+            chat_id=429272623,
+            text=f"❌ Ошибка создания бэкапа\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}",
+        )
+        logging.error("❌ Не удалось создать бэкап")
+        return False
+
+    try:
+        await bot.send_document(
+            chat_id=429272623,
+            document=FSInputFile(
+                backup_path,
+                filename=os.path.basename(backup_path),
+            ),
+            caption=(
+                "📦 Бэкап базы данных\n"
+                f"📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}\n"
+                f"💾 Размер: {os.path.getsize(backup_path) / 1024:.1f} KB"
+            ),
+        )
+        logging.info("✅ Бэкап отправлен в Telegram")
+        return True
+    except Exception as e:
+        logging.exception("❌ Ошибка отправки бэкапа в Telegram: %s", e)
+        try:
+            await bot.send_message(
+                chat_id=429272623,
+                text=(
+                    "❌ Ошибка отправки бэкапа\n"
+                    f"📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"🔍 Ошибка: {e}"
+                ),
+            )
+        except Exception:
+            logging.exception("❌ Не удалось отправить уведомление об ошибке бэкапа")
+        return False
+    finally:
+        try:
+            os.remove(backup_path)
+            logging.info("✅ Временный файл бэкапа удален")
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logging.exception("❌ Не удалось удалить временный файл бэкапа: %s", backup_path)
+
+
 async def backup_scheduler(bot: Bot):
     """
     Планировщик бэкапов - создает и отправляет бэкап базы данных каждую ночь в 01:00
@@ -65,46 +118,18 @@ async def backup_scheduler(bot: Bot):
     
     while True:
         now = datetime.now()
-        
-        # Проверяем, наступило ли время для бэкапа (01:00)
-        if now.hour == 1 and now.minute == 0:
-            logging.info("🕐 Время создания бэкапа!")
-            
-            try:
-                # Создаем бэкап
-                backup_path = await create_database_backup()
-                
-                if backup_path and os.path.exists(backup_path):
-                    # Отправляем бэкап в Telegram
-                    with open(backup_path, 'rb') as backup_file:
-                        await bot.send_document(
-                            chat_id=429272623,
-                            document=backup_file,
-                            caption=f"📦 Бэкап базы данных\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}\n💾 Размер: {os.path.getsize(backup_path) / 1024:.1f} KB"
-                        )
-                    
-                    # Удаляем временный файл
-                    os.remove(backup_path)
-                    logging.info("✅ Бэкап отправлен и файл удален")
-                else:
-                    await bot.send_message(
-                        chat_id=429272623,
-                        text=f"❌ Ошибка создания бэкапа\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}"
-                    )
-                    logging.error("❌ Не удалось создать бэкап")
-                    
-            except Exception as e:
-                logging.error(f"❌ Ошибка в планировщике бэкапов: {e}")
-                try:
-                    await bot.send_message(
-                        chat_id=429272623,
-                        text=f"❌ Ошибка в планировщике бэкапов\n📅 Дата: {now.strftime('%d.%m.%Y %H:%M')}\n🔍 Ошибка: {str(e)}"
-                    )
-                except:
-                    pass
-        
-        # Ждем 1 минуту перед следующей проверкой
-        await asyncio.sleep(60)
+        next_run = now.replace(hour=1, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+
+        delay = (next_run - now).total_seconds()
+        logging.info("⏳ Следующий автоматический бэкап: %s", next_run.isoformat())
+        await asyncio.sleep(delay)
+
+        try:
+            await create_and_send_database_backup(bot)
+        except Exception:
+            logging.exception("❌ Непредвиденная ошибка в планировщике бэкапов")
 
 
 async def mailing_scheduler(bot):
