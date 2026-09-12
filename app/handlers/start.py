@@ -2,6 +2,8 @@
 
 import json
 import logging
+from html import escape
+from aiogram.exceptions import TelegramForbiddenError
 from datetime import datetime
 from aiogram import Router, types, Bot
 from aiogram.filters import CommandStart, Command, StateFilter
@@ -267,7 +269,7 @@ async def forward_all_messages(message: types.Message, bot: Bot, state: FSMConte
     if not message.text:
         return
 
-    full_name = message.from_user.full_name
+    full_name = escape(message.from_user.full_name)
     user_id = message.from_user.id
     username = message.from_user.username
 
@@ -277,11 +279,14 @@ async def forward_all_messages(message: types.Message, bot: Bot, state: FSMConte
         else:
             from_block = f"<b>📩 Сообщение от</b> <a href='tg://user?id={user_id}'>{full_name}</a>:\n\n"
 
-        text = from_block + message.text
+        text = from_block + escape(message.text)
 
-        await bot.send_message(
-            chat_id=admin_id,
-            text=text,
-            parse_mode="HTML",
-            reply_markup=get_reply_button(user_id=user_id, message_id=message.message_id)
-        )
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=get_reply_button(user_id=user_id, message_id=message.message_id)
+            )
+        except TelegramForbiddenError:
+            logging.warning("Cannot forward message to unavailable admin %s", admin_id)

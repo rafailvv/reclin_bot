@@ -1,0 +1,9 @@
+[Unit]
+Description=Verified backups of all Reclin databases
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/local/sbin/reclin-backup
